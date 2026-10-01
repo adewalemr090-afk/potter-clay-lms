@@ -258,7 +258,7 @@ async function adminPanel(){
   sb.from("cbt_codes").select("*,question_banks(name),profiles(first_name,last_name)").order("created_at",{ascending:false}).limit(50),
   sb.from("exam_attempts").select("*,question_banks(name),profiles(first_name,last_name,class)").order("submitted_at",{ascending:false}).limit(50)
  ]);
- $("content").innerHTML=`<div class="page-head"><div><h1>Admin Control</h1><p>School-wide LMS management.</p></div><div style="display:flex;gap:8px"><button class="btn btn-soft" onclick="generateCode()">+ Generate CBT code</button><button class="btn btn-soft" onclick="addQuestion()">+ Add question</button><button class="btn btn-primary" onclick="manageQuestionBank()">+ Question bank</button></div></div>
+ $("content").innerHTML=`<div class="page-head"><div><h1>Admin Control</h1><p>School-wide LMS management.</p></div><div style="display:flex;gap:8px"><button class="btn btn-soft" onclick="generateCode()">+ Generate CBT code</button><button class="btn btn-soft" onclick="addQuestion()">+ Add question</button><button class="btn btn-soft" onclick="bulkImportQuestions()">⇧ Import CSV</button><button class="btn btn-primary" onclick="manageQuestionBank()">+ Question bank</button></div></div>
  <div class="grid grid-4"><div class="card stat"><strong>${profiles?.length||0}</strong><span>Users</span></div><div class="card stat"><strong>${profiles?.filter(x=>x.role==="student").length||0}</strong><span>Students</span></div><div class="card stat"><strong>${profiles?.filter(x=>x.role==="teacher").length||0}</strong><span>Teachers</span></div><div class="card stat"><strong>${attempts?.length||0}</strong><span>Recent CBT attempts</span></div></div>
  <div class="grid grid-2" style="margin-top:20px"><div class="card"><h2>CBT access codes</h2><div class="table-wrap"><table class="data-table"><thead><tr><th>Code</th><th>Bank</th><th>Uses</th><th>Status</th></tr></thead><tbody>${(codes||[]).map(c=>`<tr><td><strong>${esc(c.code)}</strong></td><td>${esc(c.question_banks?.name||"")}</td><td>${c.uses}/${c.max_uses}</td><td><span class="badge ${c.active&&c.uses<c.max_uses?"green":"red"}">${c.active&&c.uses<c.max_uses?"Active":"Closed"}</span></td></tr>`).join("")||"<tr><td colspan='4'>No codes.</td></tr>"}</tbody></table></div></div>
  <div class="card"><h2>Recent CBT activity</h2><div class="table-wrap"><table class="data-table"><thead><tr><th>Student</th><th>Test</th><th>Score</th></tr></thead><tbody>${(attempts||[]).map(a=>`<tr><td>${esc((a.profiles?.first_name||"")+" "+(a.profiles?.last_name||""))}</td><td>${esc(a.question_banks?.name||"")}</td><td><strong>${a.score}/${a.total}</strong></td></tr>`).join("")||"<tr><td colspan='3'>No attempts.</td></tr>"}</tbody></table></div></div></div>
@@ -298,6 +298,58 @@ async function addQuestion(){
  };
 }
 
+function parseCSV(text){
+ const rows=[]; let row=[], field='', quoted=false;
+ for(let i=0;i<text.length;i++){
+  const ch=text[i], next=text[i+1];
+  if(ch==='"'){if(quoted&&next==='"'){field+='"';i++;continue}quoted=!quoted;continue}
+  if(ch===','&&!quoted){row.push(field);field='';continue}
+  if((ch==='\n'||ch==='\r')&&!quoted){if(ch==='\r'&&next==='\n')i++;row.push(field);field='';if(row.some(v=>v.trim()!==''))rows.push(row);row=[];continue}
+  field+=ch;
+ }
+ if(field!==''||row.length){row.push(field);if(row.some(v=>v.trim()!==''))rows.push(row)}
+ if(!rows.length)return [];
+ const headers=rows.shift().map(h=>h.trim().toLowerCase().replace(/^\uFEFF/,''));
+ return rows.map(r=>Object.fromEntries(headers.map((h,i)=>[h,(r[i]??'').trim()])));
+}
+function csvTemplate(){
+ const header='class,subject,bank_name,exam_standard,duration_minutes,question_count,question_text,option_a,option_b,option_c,option_d,correct_option,explanation,marks';
+ const sample=['JSS 1','Mathematics','JSS 1 Mathematics Practice','School Standard','60','50','What is 2 + 3?','4','5','6','7','B','2 + 3 = 5.','1'];
+ const escCsv=v=>'"'+String(v).replaceAll('"','""')+'"';
+ return header+'\n'+sample.map(escCsv).join(',');
+}
+async function bulkImportQuestions(){
+ showModal('<h2>Bulk import CBT questions</h2><p class="muted">Upload a CSV containing your class, subject, question bank and questions. The importer will find the matching subject/question bank and create them when needed.</p><div class="card" style="background:#faf7f4;margin:15px 0"><strong>Required columns</strong><p style="font-size:12px;line-height:1.7;margin:8px 0">class, subject, bank_name, question_text, option_a, option_b, option_c, option_d, correct_option</p><strong>Optional</strong><p style="font-size:12px;line-height:1.7;margin:8px 0">exam_standard, duration_minutes, question_count, explanation, marks</p></div><div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:15px"><button type="button" class="btn btn-soft" id="downloadCsvTemplate">Download CSV template</button></div><form id="bulkImportForm" class="field"><label>CSV file<input id="bulkCsvFile" type="file" accept=".csv,text/csv" required></label><label>When a question bank does not exist<select id="bulkBankMode"><option value="create">Create it automatically</option><option value="stop">Stop and report an error</option></select></label><button class="btn btn-primary" type="submit">Validate and import</button></form><div id="bulkImportStatus" class="muted" style="margin-top:14px"></div>');
+ $('downloadCsvTemplate').onclick=()=>{const blob=new Blob([csvTemplate()],{type:'text/csv;charset=utf-8'});const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='potter-clay-cbt-question-template.csv';a.click();URL.revokeObjectURL(url)};
+ $('bulkImportForm').onsubmit=async e=>{
+  e.preventDefault(); const file=$('bulkCsvFile').files[0]; if(!file)return;
+  const status=$('bulkImportStatus'); status.textContent='Reading and validating CSV...';
+  try{
+   const rows=parseCSV(await file.text());
+   const required=['class','subject','bank_name','question_text','option_a','option_b','option_c','option_d','correct_option'];
+   if(!rows.length)throw new Error('The CSV file is empty.');
+   const missing=required.filter(k=>!(k in rows[0]));
+   if(missing.length)throw new Error('Missing required column(s): '+missing.join(', '));
+   const validOptions=['A','B','C','D'],errors=[];
+   rows.forEach((r,i)=>{const line=i+2;if(!r.class||!r.subject||!r.bank_name||!r.question_text)errors.push('Row '+line+': class, subject, bank_name and question_text are required.');if(!validOptions.includes((r.correct_option||'').toUpperCase()))errors.push('Row '+line+': correct_option must be A, B, C or D.')});
+   if(errors.length)throw new Error(errors.slice(0,12).join('\n')+(errors.length>12?'\n...and '+(errors.length-12)+' more error(s).':''));
+   status.textContent='Validated '+rows.length+' question(s). Matching subjects and question banks...';
+   const groups=new Map();
+   rows.forEach(r=>{const cls=r.class.trim(),subject=r.subject.trim(),bank=r.bank_name.trim(),key=[cls.toLowerCase(),subject.toLowerCase(),bank.toLowerCase()].join('|');if(!groups.has(key))groups.set(key,{className:cls,subjectName:subject,bankName:bank,rows:[]});groups.get(key).rows.push(r)});
+   let inserted=0,createdBanks=0,createdSubjects=0;
+   for(const g of groups.values()){
+    let {data:subject,error:se}=await sb.from('subjects').select('*').eq('class',g.className).ilike('name',g.subjectName).maybeSingle();if(se)throw se;
+    if(!subject){const {data:newSubject,error:ce}=await sb.from('subjects').insert({class:g.className,name:g.subjectName,description:g.className+' '+g.subjectName+' curriculum'}).select().single();if(ce)throw new Error('Could not create subject '+g.subjectName+' for '+g.className+': '+ce.message);subject=newSubject;createdSubjects++}
+    let {data:bank,error:be}=await sb.from('question_banks').select('*').eq('class',g.className).eq('subject_id',subject.id).ilike('name',g.bankName).maybeSingle();if(be)throw be;
+    if(!bank){if($('bulkBankMode').value==='stop')throw new Error('Question bank '+g.bankName+' was not found for '+g.className+' / '+g.subjectName+'.');const first=g.rows[0];const {data:newBank,error:ce}=await sb.from('question_banks').insert({subject_id:subject.id,class:g.className,name:g.bankName,exam_standard:first.exam_standard||'School Standard',duration_minutes:Number(first.duration_minutes||60),question_count:Number(first.question_count||g.rows.length),active:true}).select().single();if(ce)throw new Error('Could not create question bank '+g.bankName+': '+ce.message);bank=newBank;createdBanks++}
+    const payload=g.rows.map(r=>({bank_id:bank.id,question_text:r.question_text.trim(),option_a:r.option_a.trim(),option_b:r.option_b.trim(),option_c:r.option_c.trim(),option_d:r.option_d.trim(),correct_option:r.correct_option.toUpperCase(),explanation:r.explanation||'',marks:Number(r.marks||1)}));
+    for(let i=0;i<payload.length;i+=50){const {error:qe}=await sb.from('questions').insert(payload.slice(i,i+50));if(qe)throw new Error('Could not import questions into '+g.bankName+': '+qe.message);inserted+=Math.min(50,payload.length-i)}
+    const {count}=await sb.from('questions').select('id',{count:'exact',head:true}).eq('bank_id',bank.id);await sb.from('question_banks').update({question_count:count||payload.length}).eq('id',bank.id);
+   }
+   status.textContent='Import complete: '+inserted+' question(s), '+createdBanks+' question bank(s) and '+createdSubjects+' subject(s) created.';toast('Imported '+inserted+' CBT question(s).');setTimeout(()=>{closeModal();adminPanel()},700);
+  }catch(err){status.textContent=err.message||'Import failed.';toast(err.message||'Import failed.',true)}
+ };
+}
 async function manageQuestionBank(){
  const {data:subjects}=await sb.from("subjects").select("*").order("class").order("name");
  showModal(`<h2>Create question bank</h2><form id="bankForm" class="field"><label>Subject<select id="bs">${subjects.map(s=>`<option value="${s.id}">${esc(s.class)} · ${esc(s.name)}</option>`).join("")}</select></label><label>Bank name<input id="bn" value="Practice CBT" required></label><label>Exam standard<select id="be"><option>School Standard</option><option>NECO BECE Standard</option><option>WAEC Standard</option><option>JAMB Standard</option><option>WAEC/NECO/JAMB-style practice</option></select></label><label>Duration<input id="bd" type="number" value="60"></label><label>Question count<input id="bq" type="number" value="50"></label><button class="btn btn-primary" type="submit">Create bank</button></form>
