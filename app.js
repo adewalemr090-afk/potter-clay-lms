@@ -312,6 +312,12 @@ function parseCSV(text){
  const headers=rows.shift().map(h=>h.trim().toLowerCase().replace(/^\uFEFF/,''));
  return rows.map(r=>Object.fromEntries(headers.map((h,i)=>[h,(r[i]??'').trim()])));
 }
+function normalizeSchoolClass(value){
+ const raw=String(value||'').trim().replace(/\\s+/g,' ');
+ const key=raw.toUpperCase().replace(/\\s+/g,'');
+ const map={'JSS1':'JSS 1','JSS2':'JSS 2','JSS3':'JSS 3','SS1':'SS 1','SS2':'SS 2','SS3':'SS 3'};
+ return map[key]||raw;
+}
 function csvTemplate(){
  const header='class,subject,bank_name,exam_standard,duration_minutes,question_count,question_text,option_a,option_b,option_c,option_d,correct_option,explanation,marks';
  const sample=['JSS 1','Mathematics','JSS 1 Mathematics Practice','School Standard','60','50','What is 2 + 3?','4','5','6','7','B','2 + 3 = 5.','1'];
@@ -335,7 +341,7 @@ async function bulkImportQuestions(){
    if(errors.length)throw new Error(errors.slice(0,12).join('\n')+(errors.length>12?'\n...and '+(errors.length-12)+' more error(s).':''));
    status.textContent='Validated '+rows.length+' question(s). Matching subjects and question banks...';
    const groups=new Map();
-   rows.forEach(r=>{const cls=r.class.trim(),subject=r.subject.trim(),bank=r.bank_name.trim(),key=[cls.toLowerCase(),subject.toLowerCase(),bank.toLowerCase()].join('|');if(!groups.has(key))groups.set(key,{className:cls,subjectName:subject,bankName:bank,rows:[]});groups.get(key).rows.push(r)});
+   rows.forEach(r=>{const cls=normalizeSchoolClass(r.class),subject=r.subject.trim(),bank=r.bank_name.trim(),key=[cls.toLowerCase(),subject.toLowerCase(),bank.toLowerCase()].join('|');if(!groups.has(key))groups.set(key,{className:cls,subjectName:subject,bankName:bank,rows:[]});groups.get(key).rows.push(r)});
    let inserted=0,createdBanks=0,createdSubjects=0;
    for(const g of groups.values()){
     let {data:subject,error:se}=await sb.from('subjects').select('*').eq('class',g.className).ilike('name',g.subjectName).maybeSingle();if(se)throw se;
