@@ -78,3 +78,10 @@ CREATE POLICY "teachers manage theory marks" ON public.theory_marks
 -- Account access flag used by the LMS admin controls.
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true;
 CREATE INDEX IF NOT EXISTS profiles_role_active_idx ON public.profiles(role, is_active);
+
+-- Permit admins to update account profile flags (including is_active).
+DROP POLICY IF EXISTS "admins update profiles" ON public.profiles;
+CREATE POLICY "admins update profiles" ON public.profiles
+ FOR UPDATE TO authenticated
+ USING (EXISTS (SELECT 1 FROM public.profiles admin_profile WHERE admin_profile.id=auth.uid() AND admin_profile.role='admin'))
+ WITH CHECK (EXISTS (SELECT 1 FROM public.profiles admin_profile WHERE admin_profile.id=auth.uid() AND admin_profile.role='admin'));
