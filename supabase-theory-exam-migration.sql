@@ -74,3 +74,7 @@ DROP POLICY IF EXISTS "teachers manage theory marks" ON public.theory_marks;
 CREATE POLICY "teachers manage theory marks" ON public.theory_marks
  FOR ALL TO authenticated USING (EXISTS (SELECT 1 FROM public.profiles p WHERE p.id=auth.uid() AND p.role IN ('teacher','admin')))
  WITH CHECK (EXISTS (SELECT 1 FROM public.profiles p WHERE p.id=auth.uid() AND p.role IN ('teacher','admin')));
+
+-- Account access flag used by the LMS admin controls.
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true;
+CREATE INDEX IF NOT EXISTS profiles_role_active_idx ON public.profiles(role, is_active);
