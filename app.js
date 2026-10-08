@@ -337,11 +337,36 @@ async function adminPanel(){
   sb.from("cbt_codes").select("*,question_banks(name),profiles(first_name,last_name)").order("created_at",{ascending:false}).limit(50),
   sb.from("exam_attempts").select("*,question_banks(name),profiles(first_name,last_name,class)").order("submitted_at",{ascending:false}).limit(50)
  ]);
- $("content").innerHTML=`<div class="page-head"><div><h1>Admin Control</h1><p>School-wide LMS management.</p></div><div style="display:flex;gap:8px"><button class="btn btn-soft" onclick="generateCode()">+ Generate CBT code</button><button class="btn btn-soft" onclick="addQuestion()">+ Add question</button><button class="btn btn-soft" onclick="bulkImportQuestions()">⇧ Import CSV</button><button class="btn btn-primary" onclick="manageQuestionBank()">+ Question bank</button></div></div>
+ $("content").innerHTML=`<div class="page-head"><div><h1>Admin Control</h1><p>School-wide LMS management.</p></div><div style="display:flex;gap:8px"><button class="btn btn-soft" onclick="generateCode()">+ Generate CBT code</button><button class="btn btn-soft" onclick="generateBulkCodes()">Bulk codes</button><button class="btn btn-soft" onclick="manageAccounts()">Manage accounts</button><button class="btn btn-soft" onclick="addQuestion()">+ Add question</button><button class="btn btn-soft" onclick="bulkImportQuestions()">⇧ Import CSV</button><button class="btn btn-primary" onclick="manageQuestionBank()">+ Question bank</button></div></div>
  <div class="grid grid-4"><div class="card stat"><strong>${profiles?.length||0}</strong><span>Users</span></div><div class="card stat"><strong>${profiles?.filter(x=>x.role==="student").length||0}</strong><span>Students</span></div><div class="card stat"><strong>${profiles?.filter(x=>x.role==="teacher").length||0}</strong><span>Teachers</span></div><div class="card stat"><strong>${attempts?.length||0}</strong><span>Recent CBT attempts</span></div></div>
  <div class="grid grid-2" style="margin-top:20px"><div class="card"><h2>CBT access codes</h2><div class="table-wrap"><table class="data-table"><thead><tr><th>Code</th><th>Bank</th><th>Uses</th><th>Status</th></tr></thead><tbody>${(codes||[]).map(c=>`<tr><td><strong>${esc(c.code)}</strong></td><td>${esc(c.question_banks?.name||"")}</td><td>${c.uses}/${c.max_uses}</td><td><span class="badge ${c.active&&c.uses<c.max_uses?"green":"red"}">${c.active&&c.uses<c.max_uses?"Active":"Closed"}</span></td></tr>`).join("")||"<tr><td colspan='4'>No codes.</td></tr>"}</tbody></table></div></div>
  <div class="card"><h2>Recent CBT activity</h2><div class="table-wrap"><table class="data-table"><thead><tr><th>Student</th><th>Test</th><th>Score</th></tr></thead><tbody>${(attempts||[]).map(a=>`<tr><td>${esc((a.profiles?.first_name||"")+" "+(a.profiles?.last_name||""))}</td><td>${esc(a.question_banks?.name||"")}</td><td><strong>${a.score}/${a.total}</strong></td></tr>`).join("")||"<tr><td colspan='3'>No attempts.</td></tr>"}</tbody></table></div></div></div>
  <div class="card" style="margin-top:20px"><h2>User accounts</h2><div class="table-wrap"><table class="data-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Class</th></tr></thead><tbody>${(profiles||[]).map(p=>`<tr><td>${esc(p.first_name+" "+p.last_name)}</td><td>${esc(p.email||"")}</td><td><span class="badge">${esc(p.role)}</span></td><td>${esc(p.class||"—")}</td></tr>`).join("")}</tbody></table></div></div>`;
+}
+
+async function manageAccounts(){
+ if(profile.role!=="admin")return toast("Administrator access required.",true);
+ const email=prompt("Enter the exact email address of the student or teacher account:");
+ if(!email)return;
+ const {data:p,error}=await sb.from("profiles").select("id,first_name,last_name,email,role,is_active").ilike("email",email.trim()).maybeSingle();
+ if(error||!p)return toast(error?.message||"Account not found.",true);
+ if(p.id===currentUser.id)return toast("You cannot disable your own current admin account.",true);
+ const currentlyActive=p.is_active!==false;
+ const action=currentlyActive?"disable":"re-enable";
+ if(!confirm("Do you want to "+action+" "+p.first_name+" "+p.last_name+" ("+p.email+")?"))return;
+ const {error:ue}=await sb.from("profiles").update({is_active:!currentlyActive}).eq("id",p.id);
+ if(ue)return toast(ue.message,true);
+ toast("Account "+(currentlyActive?"disabled":"re-enabled")+".");adminPanel();
+}
+async function generateBulkCodes(){
+ if(profile.role!=="admin")return toast("Administrator access required.",true);
+ const {data:banks,error}=await sb.from("question_banks").select("*,subjects(name,class)").eq("active",true).order("created_at",{ascending:false});
+ if(error)return toast(error.message,true);if(!banks?.length)return toast("Create an active question bank first.",true);
+ showModal(`<h2>Generate bulk CBT access codes</h2><form id="bulkCodeForm" class="field"><label>Question bank<select id="bulkCodeBank">${banks.map(b=>`<option value="${b.id}">${esc(b.class)} · ${esc(b.subjects?.name)} · ${esc(b.name)}</option>`).join("")}</select></label><label>Number of codes (1–200)<input id="bulkCodeCount" type="number" min="1" max="200" value="20" required></label><label>Expiry (optional)<input id="bulkCodeExpiry" type="datetime-local"></label><button class="btn btn-primary" type="submit">Generate codes</button></form>`);
+ $("bulkCodeForm").onsubmit=async e=>{e.preventDefault();const count=Math.max(1,Math.min(200,Number($("bulkCodeCount").value)||1)),bankId=$("bulkCodeBank").value,expiry=$("bulkCodeExpiry").value?new Date($("bulkCodeExpiry").value).toISOString():null,codes=[];
+ for(let i=0;i<count;i++){const code=("PCS-"+crypto.randomUUID().replaceAll("-","").slice(0,8)).toUpperCase();const {error:ie}=await sb.from("cbt_codes").insert({code,bank_id:bankId,student_id:null,expires_at:expiry,created_by:currentUser.id});if(ie)return toast("Stopped after "+codes.length+" code(s): "+ie.message,true);codes.push(code)}
+ showModal(`<h2>${codes.length} CBT codes generated</h2><p class="muted">Each code follows the existing two-use rule. Copy and distribute them securely.</p><textarea id="bulkCodesText" rows="10" style="width:100%">${codes.join("\n")}</textarea><button class="btn btn-primary" onclick="navigator.clipboard.writeText(document.getElementById('bulkCodesText').value).then(()=>toast('Codes copied')).catch(()=>toast('Select and copy the codes manually',true))">Copy codes</button>`);
+ };
 }
 async function generateCode(){
  const {data:banks}=await sb.from("question_banks").select("*,subjects(name,class)").eq("active",true).order("created_at",{ascending:false});
