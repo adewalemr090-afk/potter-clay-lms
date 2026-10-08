@@ -80,7 +80,7 @@ async function boot(){
  if(!session){$("authView").classList.remove("hidden");$("appView").classList.add("hidden");return}
  currentUser=session.user;
  if(!currentUser.email_confirmed_at){await sb.auth.signOut();$("authView").classList.remove("hidden");return}
- try{await getProfile();$("authView").classList.add("hidden");$("appView").classList.remove("hidden");navigate("dashboard")}
+ try{await getProfile();if(profile.is_active===false){await sb.auth.signOut();currentUser=null;profile=null;$("authView").classList.remove("hidden");$("appView").classList.add("hidden");return toast("This account has been disabled by the school administrator.",true)}$("authView").classList.add("hidden");$("appView").classList.remove("hidden");navigate("dashboard")}
  catch(e){toast("Unable to load your profile: "+e.message,true)}
 }
 sb.auth.onAuthStateChange((_event,session)=>{if(session&&!currentUser)boot()});
@@ -392,8 +392,8 @@ function parseCSV(text){
  return rows.map(r=>Object.fromEntries(headers.map((h,i)=>[h,(r[i]??'').trim()])));
 }
 function normalizeSchoolClass(value){
- const raw=String(value||'').trim().replace(/\\s+/g,' ');
- const key=raw.toUpperCase().replace(/\\s+/g,'');
+ const raw=String(value||'').trim().replace(/\s+/g,' ');
+ const key=raw.toUpperCase().replace(/\s+/g,'');
  const map={'JSS1':'JSS 1','JSS2':'JSS 2','JSS3':'JSS 3','SS1':'SS 1','SS2':'SS 2','SS3':'SS 3'};
  return map[key]||raw;
 }
