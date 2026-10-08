@@ -95,3 +95,26 @@ CREATE POLICY "admins update profiles" ON public.profiles
  FOR UPDATE TO authenticated
  USING (public.is_lms_admin())
  WITH CHECK (public.is_lms_admin());
+
+-- Prevent ordinary users from changing their own account-access flag.
+CREATE OR REPLACE FUNCTION public.guard_profile_is_active()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF NEW.is_active IS DISTINCT FROM OLD.is_active AND NOT public.is_lms_admin() THEN
+    RAISE EXCEPTION 'Only a school administrator can change account access.';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS guard_profile_is_active_trigger ON public.profiles;
+CREATE TRIGGER guard_profile_is_active_trigger
+BEFORE UPDATE OF is_active ON public.profiles
+FOR EACH ROW EXECUTE FUNCTION public.guard_profile_is_active();
+
+REVOKE ALL ON FUNCTION public.is_lms_admin() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.is_lms_admin() TO authenticated;
