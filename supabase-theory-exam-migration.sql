@@ -79,9 +79,19 @@ CREATE POLICY "teachers manage theory marks" ON public.theory_marks
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true;
 CREATE INDEX IF NOT EXISTS profiles_role_active_idx ON public.profiles(role, is_active);
 
--- Permit admins to update account profile flags (including is_active).
+-- SECURITY DEFINER helper avoids recursive profile-policy evaluation.
+CREATE OR REPLACE FUNCTION public.is_lms_admin()
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin');
+$$;
+
 DROP POLICY IF EXISTS "admins update profiles" ON public.profiles;
 CREATE POLICY "admins update profiles" ON public.profiles
  FOR UPDATE TO authenticated
- USING (EXISTS (SELECT 1 FROM public.profiles admin_profile WHERE admin_profile.id=auth.uid() AND admin_profile.role='admin'))
- WITH CHECK (EXISTS (SELECT 1 FROM public.profiles admin_profile WHERE admin_profile.id=auth.uid() AND admin_profile.role='admin'));
+ USING (public.is_lms_admin())
+ WITH CHECK (public.is_lms_admin());
