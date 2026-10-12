@@ -130,17 +130,44 @@ async function openCourse(id){
  $("content").innerHTML=`<div class="page-head"><div><span class="eyebrow">${esc(s.class)}</span><h1>${esc(s.name)}</h1><p>${esc(s.description||"")}</p></div><button class="btn btn-soft" onclick="navigate('courses')">← Courses</button></div>
  <div class="lesson-list">${(lessons||[]).map(l=>`<div class="lesson-row"><div><span class="tag">LESSON</span><h3>${esc(l.title)}</h3><p>${esc(l.summary||"Lesson resource")} · ${l.duration_minutes||30} min</p></div><div class="lesson-actions"><button class="btn btn-primary" onclick="openLesson('${l.id}')">Open</button>${l.notes_url?`<a class="btn btn-soft" target="_blank" href="${l.notes_url}">Notes</a>`:""}${l.audio_url?`<audio controls src="${l.audio_url}" style="height:34px;max-width:180px"></audio>`:""}</div></div>`).join("")||'<div class="empty">No lessons have been published for this subject yet.</div>'}</div>`;
 }
+function renderCommentTree(comments, names, parentId = null, depth = 0){
+ const children=(comments||[]).filter(c=>(c.parent_comment_id||null)===(parentId||null));
+ if(!children.length) return '';
+ return children.map(c=>`<div class="comment" style="margin:12px 0 12px ${Math.min(depth,3)*18}px;padding:12px;border-left:3px solid var(--line);border-radius:6px">
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><strong>${esc(names[c.user_id]||"LMS member")}</strong><span class="tag">${esc(c.author_role||"member")}</span><small class="muted">${c.created_at?new Date(c.created_at).toLocaleString():""}</small></div>
+  <p style="white-space:pre-wrap;margin:8px 0">${esc(c.body)}</p>
+  <form class="replyForm field" data-parent-id="${esc(c.id)}" style="margin-top:8px">
+   <label>Reply<textarea name="replyBody" rows="2" required maxlength="5000" placeholder="Reply to this comment..."></textarea></label>
+   <button class="btn btn-soft" type="submit">Reply</button>
+  </form>
+  ${renderCommentTree(comments,names,c.id,depth+1)}
+ </div>`).join('');
+}
+
 async function openLesson(id){
- const {data:l}=await sb.from("lessons").select("*,subjects(name,class)").eq("id",id).single();
- const {data:comments}=await sb.from("comments").select("id,body,created_at,user_id").eq("lesson_id",id).order("created_at");
- const ids=[...new Set((comments||[]).map(c=>c.user_id))];let names={};
- if(ids.length){const {data:p}=await sb.from("profiles").select("id,first_name,last_name").in("id",ids);(p||[]).forEach(x=>names[x.id]=`${x.first_name} ${x.last_name}`)}
+ const {data:l,error:lessonError}=await sb.from("lessons").select("*,subjects(name,class)").eq("id",id).single();
+ if(lessonError||!l){toast(lessonError?.message||"Lesson could not be loaded.",true);return;}
+ const {data:comments,error:commentError}=await sb.from("comments").select("id,body,created_at,user_id,lesson_id,parent_comment_id").eq("lesson_id",id).order("created_at");
+ if(commentError){toast("Unable to load discussion: "+commentError.message,true);return;}
+ const ids=[...new Set((comments||[]).map(c=>c.user_id))];let names={};let roles={};
+ if(ids.length){const {data:p,error:profileError}=await sb.from("profiles").select("id,first_name,last_name,role").in("id",ids);if(profileError){toast("Comments loaded, but member names could not be loaded.",true)}(p||[]).forEach(x=>{names[x.id]=`${x.first_name||""} ${x.last_name||""}`.trim()||"LMS member";roles[x.id]=x.role||"member"})}
+ (comments||[]).forEach(c=>c.author_role=roles[c.user_id]||"member");
+ const canReply=!!currentUser;
  showModal(`<span class="eyebrow">${esc(l.subjects?.class||"")}</span><h2>${esc(l.title)}</h2><p class="muted">${esc(l.summary||"")}</p><div class="lesson-content" style="line-height:1.8">${esc(l.content||"No lesson text has been added yet.").replace(/\n/g,"<br>")}</div>
- ${l.audio_url?`<audio controls src="${l.audio_url}" style="width:100%;margin:20px 0"></audio>`:""}
- <hr style="border:0;border-top:1px solid var(--line);margin:24px 0"><h3>Discussion</h3>
- <div>${(comments||[]).map(c=>`<div class="comment"><strong>${esc(names[c.user_id]||"Student")}</strong><p>${esc(c.body)}</p></div>`).join("")||'<p class="muted">Be the first to comment.</p>'}</div>
- <form id="commentForm" class="field"><label>Add a comment<textarea id="commentBody" rows="3" required placeholder="Ask a question or share your thought..."></textarea></label><button class="btn btn-primary" type="submit">Post comment</button></form>`);
- $("commentForm").onsubmit=async e=>{e.preventDefault();const {error}=await sb.from("comments").insert({lesson_id:id,user_id:currentUser.id,body:$("commentBody").value.trim()});if(error)toast(error.message,true);else{toast("Comment posted.");openLesson(id)}}
+ ${l.notes_url?`<p><a class="btn btn-soft" target="_blank" rel="noopener" href="${esc(l.notes_url)}">Open lesson document</a></p>`:""}
+ ${l.audio_url?`<audio controls src="${esc(l.audio_url)}" style="width:100%;margin:20px 0"></audio>`:""}
+ <hr style="border:0;border-top:1px solid var(--line);margin:24px 0"><h3>Discussion & replies</h3>
+ <div id="commentsThread">${renderCommentTree(comments||[],names)||'<p class="muted">Be the first to comment.</p>'}</div>
+ ${canReply?`<form id="commentForm" class="field"><label>Add a comment<textarea id="commentBody" rows="3" required maxlength="5000" placeholder="Ask a question or share your thought..."></textarea></label><button class="btn btn-primary" type="submit">Post comment</button></form>`:""}`);
+ const submitComment=async(body,parentId=null)=>{
+  const clean=String(body||"").trim();if(!clean)return toast("Please enter a comment or reply.",true);
+  const payload={lesson_id:id,user_id:currentUser.id,body:clean};if(parentId)payload.parent_comment_id=parentId;
+  const {error}=await sb.from("comments").insert(payload);
+  if(error){toast("Could not post. Check the discussion permissions: "+error.message,true);return;}
+  toast(parentId?"Reply posted.":"Comment posted.");await openLesson(id);
+ };
+ if($("commentForm"))$("commentForm").onsubmit=async e=>{e.preventDefault();await submitComment($("commentBody").value);};
+ document.querySelectorAll(".replyForm").forEach(form=>form.onsubmit=async e=>{e.preventDefault();const body=form.querySelector('[name="replyBody"]').value;await submitComment(body,form.dataset.parentId);});
 }
 
 async function cbtCentre(){
@@ -150,28 +177,31 @@ async function cbtCentre(){
  <div class="grid grid-2">${(banks||[]).map(b=>`<div class="card"><span class="tag">${esc(b.exam_standard)}</span><h2>${esc(b.name)}</h2><p class="muted">${esc(b.subjects?.name||"Subject")} · ${b.question_count} questions · ${b.duration_minutes} minutes</p><button class="btn btn-primary" onclick="startCBT('${b.id}')">Start with access code →</button></div>`).join("")||'<div class="empty">No CBT question banks are active for your class yet.</div>'}</div>`;
 }
 
-let candidateDetails=null, theoryTimer=null, currentTheory=null, lastAttemptId=null;
+let candidateDetails=null, theoryTimer=null, objectiveTimer=null, currentTheory=null, lastAttemptId=null, submittingExam=false;
 async function startCBT(bankId){
  const fullName=prompt("Confirm your full name:",[profile.first_name,profile.last_name].filter(Boolean).join(" "));
  if(!fullName||!fullName.trim())return;
- const candidateClass=normalizeSchoolClass(prompt("Confirm your class:",profile.class||"JSS 1")||profile.class||"JSS 1");
+ // Always use the class assigned by the school; do not let a candidate choose another class.
+ const candidateClass=normalizeSchoolClass(profile.class||"");
+ if(!candidateClass)return toast("Your school has not assigned a class to your account. Contact the administrator.",true);
  const candidateSex=(prompt("Confirm sex (Male/Female):",profile.sex||"")||"").trim();
  const candidateArm=(prompt("Confirm arm (e.g. A or B):",profile.arm||"")||"").trim().toUpperCase();
- if(!candidateSex||!candidateArm)return toast("Please provide sex and arm before starting the examination.",true);
- candidateDetails={name:fullName.trim(),className:candidateClass,sex:candidateSex,arm:candidateArm};
+ if(!["MALE","FEMALE"].includes(candidateSex.toUpperCase()))return toast("Please enter Male or Female for sex.",true);
+ if(!/^[A-D]$/.test(candidateArm))return toast("Please enter a valid arm (A, B, C or D).",true);
+ candidateDetails={name:fullName.trim(),className:candidateClass,sex:candidateSex[0].toUpperCase()+candidateSex.slice(1).toLowerCase(),arm:candidateArm};
  const {data:use,error}=await sb.rpc("use_cbt_code",{p_code:prompt("Enter the CBT access code supplied by the school admin:")||"",p_bank_id:bankId});
  if(error||!use?.ok)return toast(error?.message||use?.message||"Invalid CBT code.",true);
  const {data:bank,error:bankError}=await sb.from("question_banks").select("*,subjects(name)").eq("id",bankId).single();
  if(bankError)return toast(bankError.message,true);
- const {data:q,error:qe}=await sb.from("questions").select("*").eq("bank_id",bankId).limit(50);
+ const {data:q,error:qe}=await sb.from("questions").select("*").eq("bank_id",bankId).order("id",{ascending:true}).limit(50);
  if(qe||!q?.length)return toast("This question bank has no questions yet.",true);
  currentExam={bank,questions:q.slice(0,Math.min(50,q.length)),codeId:use.code_id,started:Date.now(),deadline:Date.now()+Number(bank.duration_minutes||60)*60000};examAnswers={};
  renderQuestion(0);startObjectiveClock();
 }
 function startObjectiveClock(){
- clearInterval(theoryTimer);
- const tick=()=>{if(!currentExam)return clearInterval(theoryTimer);const left=Math.max(0,currentExam.deadline-Date.now());$("pageSub").textContent="Time remaining: "+Math.floor(left/60000)+"m "+Math.floor(left%60000/1000)+"s";if(left<=0){clearInterval(theoryTimer);submitExam(true)}};
- tick();theoryTimer=setInterval(tick,1000);
+ clearInterval(objectiveTimer);
+ const tick=()=>{if(!currentExam)return clearInterval(objectiveTimer);const left=Math.max(0,currentExam.deadline-Date.now());$("pageSub").textContent="Time remaining: "+Math.floor(left/60000)+"m "+Math.floor(left%60000/1000)+"s";if(left<=0){clearInterval(objectiveTimer);objectiveTimer=null;submitExam(true)}};
+ tick();objectiveTimer=setInterval(tick,1000);
 }
 function renderQuestion(index){
  const q=currentExam.questions[index];currentExam.index=index;
@@ -183,21 +213,29 @@ function renderQuestion(index){
  <div style="display:flex;justify-content:space-between;margin-top:25px"><button class="btn btn-soft" ${index===0?"disabled":""} onclick="renderQuestion(${index-1})">← Previous</button>${index===currentExam.questions.length-1?`<button class="btn btn-primary" onclick="submitExam()">Submit objective</button>`:`<button class="btn btn-primary" onclick="renderQuestion(${index+1})">Next →</button>`}</div></div>`;
 }
 async function submitExam(autoSubmit=false){
- if(!currentExam)return;
+ if(!currentExam||submittingExam)return;
  if(!autoSubmit&&!confirm("Submit the objective section now?"))return;
- clearInterval(theoryTimer);theoryTimer=null;
- let score=0;currentExam.questions.forEach(q=>{if(examAnswers[q.id]===q.correct_option)score+=Number(q.marks||1)});
- const total=currentExam.questions.reduce((a,q)=>a+Number(q.marks||1),0);
- const now=new Date().toISOString();
- const {data,error}=await sb.from("exam_attempts").insert({bank_id:currentExam.bank.id,student_id:currentUser.id,code_id:currentExam.codeId,score,total,answers:examAnswers,started_at:new Date(currentExam.started).toISOString(),submitted_at:now,candidate_name:candidateDetails?.name,candidate_class:candidateDetails?.className,candidate_sex:candidateDetails?.sex,candidate_arm:candidateDetails?.arm}).select().single();
- if(error)return toast(error.message,true);
- await sb.from("profiles").update({class:candidateDetails.className,sex:candidateDetails.sex,arm:candidateDetails.arm}).eq("id",currentUser.id);
- profile={...profile,class:candidateDetails.className,sex:candidateDetails.sex,arm:candidateDetails.arm};
- lastAttemptId=data.id;
+ submittingExam=true;
+ clearInterval(objectiveTimer);objectiveTimer=null;
+ const questionIds=currentExam.questions.map(q=>q.id);
+ const {data,error}=await sb.rpc("submit_objective_exam",{
+  p_bank_id:currentExam.bank.id,
+  p_code_id:currentExam.codeId,
+  p_question_ids:questionIds,
+  p_answers:examAnswers,
+  p_candidate_name:candidateDetails?.name||[profile.first_name,profile.last_name].filter(Boolean).join(" "),
+  p_candidate_sex:candidateDetails?.sex||profile.sex||null,
+  p_candidate_arm:candidateDetails?.arm||profile.arm||null,
+  p_started_at:new Date(currentExam.started).toISOString()
+ });
+ if(error){submittingExam=false;return toast("Could not submit exam: "+error.message,true);}
+ if(!data?.ok||!data?.attempt_id){submittingExam=false;return toast(data?.message||"The exam could not be submitted. Please contact the administrator.",true);}
+ const score=Number(data.score||0),total=Number(data.total||0);
+ lastAttemptId=data.attempt_id;
  const pct=Math.round(score/total*100);
  const {data:theoryQs}=await sb.from("theory_questions").select("id").eq("bank_id",currentExam.bank.id).limit(1);
- $("content").innerHTML=`<div class="card" style="text-align:center;max-width:680px;margin:auto"><span class="eyebrow">OBJECTIVE RESULT</span><h1>${esc(currentExam.bank.name)}</h1><div class="result-ring" style="--score:${pct}%"><div><div class="result-score">${pct}%</div><small>${score} / ${total}</small></div></div><p class="muted">Candidate: ${esc(candidateDetails.name)} · ${esc(candidateDetails.className)} ${esc(candidateDetails.arm)}</p><p class="muted">${autoSubmit?"Objective section submitted automatically when time expired.":"Objective section submitted."}</p><div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:20px"><button class="btn btn-soft" onclick="downloadResult('${data.id}')">Download result</button>${theoryQs?.length?`<button class="btn btn-primary" onclick="startTheory('${data.id}','${currentExam.bank.id}')">Proceed to Theory →</button>`:""}<button class="btn btn-soft" onclick="navigate('cbt')">Exit to CBT Centre</button></div></div>`;
- currentExam=null;
+ $("content").innerHTML=`<div class="card" style="text-align:center;max-width:680px;margin:auto"><span class="eyebrow">OBJECTIVE RESULT</span><h1>${esc(currentExam.bank.name)}</h1><div class="result-ring" style="--score:${pct}%"><div><div class="result-score">${pct}%</div><small>${score} / ${total}</small></div></div><p class="muted">Candidate: ${esc(candidateDetails?.name||"")} · ${esc(candidateDetails?.className||profile.class||"")} ${esc(candidateDetails?.arm||"")}</p><p class="muted">${autoSubmit?"Objective section submitted automatically when time expired.":"Objective section submitted."}</p><div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:20px"><button class="btn btn-soft" onclick="downloadResult('${data.attempt_id}')">Download result</button>${theoryQs?.length?`<button class="btn btn-primary" onclick="startTheory('${data.attempt_id}','${currentExam.bank.id}')">Proceed to Theory →</button>`:""}<button class="btn btn-soft" onclick="navigate('cbt')">Exit to CBT Centre</button></div></div>`;
+ currentExam=null;submittingExam=false;
 }
 async function startTheory(attemptId,bankId){
  const {data:questions,error}=await sb.from("theory_questions").select("*").eq("bank_id",bankId).order("position");
@@ -239,18 +277,22 @@ async function profilePage(){
  const isStudent=profile.role==="student";
  $("content").innerHTML=`<div class="page-head"><div><h1>My Profile</h1><p>Keep your account information up to date, including class promotion and arm.</p></div></div>
  <div class="grid grid-2"><div class="card"><div class="profile-head"><img id="profileAvatar" class="avatar-lg" src="${avatar(profile.avatar_url)}"><div><h2>${esc(profile.first_name)} ${esc(profile.last_name)}</h2><p>${esc(profile.email||currentUser.email)} · ${esc(profile.role)}</p><p>${esc(profile.class||"Teacher/Admin")} ${profile.arm?esc(profile.arm):""}</p></div></div><hr style="border:0;border-top:1px solid var(--line);margin:22px 0"><div class="field"><label>Profile picture<input id="avatarFile" type="file" accept="image/*"></label></div><button class="btn btn-primary" style="margin-top:15px" onclick="uploadAvatar()">Upload picture</button></div>
- <div class="card"><h2>Account information</h2><div class="grid grid-2"><div class="field"><label>First name<input id="pf" value="${esc(profile.first_name)}"></label></div><div class="field"><label>Last name<input id="pl" value="${esc(profile.last_name)}"></label></div><div class="field"><label>Phone<input id="pp" value="${esc(profile.phone||"")}"></label></div>${isStudent?`<div class="field"><label>Class<select id="pc"><option ${profile.class==="JSS 1"?"selected":""}>JSS 1</option><option ${profile.class==="JSS 2"?"selected":""}>JSS 2</option><option ${profile.class==="JSS 3"?"selected":""}>JSS 3</option><option ${profile.class==="SS 1"?"selected":""}>SS 1</option><option ${profile.class==="SS 2"?"selected":""}>SS 2</option><option ${profile.class==="SS 3"?"selected":""}>SS 3</option></select></label></div><div class="field"><label>Sex<select id="px"><option value="">Select</option><option ${profile.sex==="Male"?"selected":""}>Male</option><option ${profile.sex==="Female"?"selected":""}>Female</option></select></label></div><div class="field"><label>Arm<select id="pa"><option value="">Select arm</option><option ${profile.arm==="A"?"selected":""}>A</option><option ${profile.arm==="B"?"selected":""}>B</option><option ${profile.arm==="C"?"selected":""}>C</option><option ${profile.arm==="D"?"selected":""}>D</option></select></label></div>`:`<div class="field"><label>Class<input value="${esc(profile.class||"N/A")}" disabled></label></div>`}</div><button class="btn btn-primary" style="margin-top:15px" onclick="saveProfile()">Save changes</button></div></div>`;
+ <div class="card"><h2>Account information</h2><div class="grid grid-2"><div class="field"><label>First name<input id="pf" value="${esc(profile.first_name)}"></label></div><div class="field"><label>Last name<input id="pl" value="${esc(profile.last_name)}"></label></div><div class="field"><label>Phone<input id="pp" value="${esc(profile.phone||"")}"></label></div>${isStudent?`<div class="field"><label>Assigned class<input value="${esc(profile.class||"Not assigned")}" disabled></label></div><div class="field"><label>Sex<select id="px"><option value="">Select</option><option ${profile.sex==="Male"?"selected":""}>Male</option><option ${profile.sex==="Female"?"selected":""}>Female</option></select></label></div><div class="field"><label>Arm<select id="pa"><option value="">Select arm</option><option ${profile.arm==="A"?"selected":""}>A</option><option ${profile.arm==="B"?"selected":""}>B</option><option ${profile.arm==="C"?"selected":""}>C</option><option ${profile.arm==="D"?"selected":""}>D</option></select></label></div>`:`<div class="field"><label>Class<input value="${esc(profile.class||"N/A")}" disabled></label></div>`}</div><button class="btn btn-primary" style="margin-top:15px" onclick="saveProfile()">Save changes</button></div></div>`;
 }
 async function saveProfile(){
  const update={first_name:$("pf").value.trim(),last_name:$("pl").value.trim(),phone:$("pp").value.trim()};
- if(profile.role==="student"){update.class=normalizeSchoolClass($("pc").value);update.sex=$("px").value;update.arm=$("pa").value}
+ if(profile.role==="student"){update.sex=$("px").value;update.arm=$("pa").value}
  const {data,error}=await sb.from("profiles").update(update).eq("id",currentUser.id).select().single();
  if(error)toast(error.message,true);else{profile=data;$("topName").textContent=`${profile.first_name} ${profile.last_name}`;toast("Profile updated.");profilePage()}
 }
 
 async function uploadAvatar(){
  const f=$("avatarFile").files[0];if(!f)return toast("Choose an image first.",true);
- const ext=f.name.split(".").pop().toLowerCase();const path=`${currentUser.id}/avatar.${ext}`;
+ if(!f.type.startsWith("image/"))return toast("Please select a valid image file.",true);
+ if(f.size>5*1024*1024)return toast("Profile pictures must be 5 MB or smaller.",true);
+ const ext=({"image/jpeg":"jpg","image/png":"png","image/webp":"webp","image/gif":"gif"})[f.type];
+ if(!ext)return toast("Use a JPG, PNG, WEBP or GIF image.",true);
+ const path=`${currentUser.id}/avatar.${ext}`;
  const {error}=await sb.storage.from("avatars").upload(path,f,{upsert:true,contentType:f.type});if(error)return toast(error.message,true);
  const {data}=sb.storage.from("avatars").getPublicUrl(path);const {data:p,error:pe}=await sb.from("profiles").update({avatar_url:data.publicUrl}).eq("id",currentUser.id).select().single();if(pe)return toast(pe.message,true);profile=p;$("topAvatar").src=avatar(p.avatar_url);toast("Profile picture updated.");profilePage();
 }
