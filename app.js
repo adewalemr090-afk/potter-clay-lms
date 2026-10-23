@@ -179,24 +179,56 @@ async function cbtCentre(){
 
 let candidateDetails=null, theoryTimer=null, objectiveTimer=null, currentTheory=null, lastAttemptId=null, submittingExam=false;
 async function startCBT(bankId){
- const fullName=prompt("Confirm your full name:",[profile.first_name,profile.last_name].filter(Boolean).join(" "));
- if(!fullName||!fullName.trim())return;
- // Always use the class assigned by the school; do not let a candidate choose another class.
+ // The class is controlled by the school and is displayed as read-only.
  const candidateClass=normalizeSchoolClass(profile.class||"");
  if(!candidateClass)return toast("Your school has not assigned a class to your account. Contact the administrator.",true);
- const candidateSex=(prompt("Confirm sex (Male/Female):",profile.sex||"")||"").trim();
- const candidateArm=(prompt("Confirm arm (e.g. A or B):",profile.arm||"")||"").trim().toUpperCase();
- if(!["MALE","FEMALE"].includes(candidateSex.toUpperCase()))return toast("Please enter Male or Female for sex.",true);
- if(!/^[A-D]$/.test(candidateArm))return toast("Please enter a valid arm (A, B, C or D).",true);
- candidateDetails={name:fullName.trim(),className:candidateClass,sex:candidateSex[0].toUpperCase()+candidateSex.slice(1).toLowerCase(),arm:candidateArm};
- const {data:use,error}=await sb.rpc("use_cbt_code",{p_code:prompt("Enter the CBT access code supplied by the school admin:")||"",p_bank_id:bankId});
- if(error||!use?.ok)return toast(error?.message||use?.message||"Invalid CBT code.",true);
- const {data:bank,error:bankError}=await sb.from("question_banks").select("*,subjects(name)").eq("id",bankId).single();
- if(bankError)return toast(bankError.message,true);
- const {data:q,error:qe}=await sb.from("questions").select("*").eq("bank_id",bankId).order("id",{ascending:true}).limit(50);
- if(qe||!q?.length)return toast("This question bank has no questions yet.",true);
- currentExam={bank,questions:q.slice(0,Math.min(50,q.length)),codeId:use.code_id,started:Date.now(),deadline:Date.now()+Number(bank.duration_minutes||60)*60000};examAnswers={};
- renderQuestion(0);startObjectiveClock();
+ const fullName=[profile.first_name,profile.last_name].filter(Boolean).join(" ");
+ showModal(`<div style="max-width:560px;margin:auto">
+   <span class="eyebrow">BEFORE YOU BEGIN</span>
+   <h2>Candidate Information</h2>
+   <p class="muted">Please complete this form and enter the CBT access code supplied by your school. Check your details before proceeding.</p>
+   <form id="cbtCandidateForm" class="field">
+     <label>Student's full name<input id="cbtCandidateName" name="candidateName" type="text" maxlength="200" value="${esc(fullName)}" autocomplete="name" required></label>
+     <label>Class<input id="cbtCandidateClass" type="text" value="${esc(candidateClass)}" readonly aria-readonly="true"></label>
+     <label>Sex<select id="cbtCandidateSex" required><option value="">Select sex</option><option value="Male" ${String(profile.sex||"").toLowerCase()==="male"?"selected":""}>Male</option><option value="Female" ${String(profile.sex||"").toLowerCase()==="female"?"selected":""}>Female</option></select></label>
+     <label>Arm<select id="cbtCandidateArm" required><option value="">Select arm</option>${["A","B","C","D"].map(a=>`<option value="${a}" ${String(profile.arm||"").toUpperCase()===a?"selected":""}>${a}</option>`).join("")}</select></label>
+     <label>CBT access code<input id="cbtAccessCode" type="text" maxlength="100" autocomplete="off" autocapitalize="characters" required placeholder="Enter the code provided by your school"></label>
+     <p id="cbtFormStatus" class="muted" role="status" aria-live="polite"></p>
+     <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px"><button id="cbtProceedBtn" class="btn btn-primary" type="submit">Verify details and proceed →</button><button class="btn btn-soft" type="button" id="cbtCancelBtn">Cancel</button></div>
+   </form>
+ </div>`);
+ $("cbtCancelBtn").onclick=closeModal;
+ $("cbtCandidateForm").onsubmit=async e=>{
+   e.preventDefault();
+   const submitButton=$("cbtProceedBtn"),status=$("cbtFormStatus");
+   const name=$("cbtCandidateName").value.trim();
+   const sex=$("cbtCandidateSex").value;
+   const arm=$("cbtCandidateArm").value.toUpperCase();
+   const accessCode=$("cbtAccessCode").value.trim();
+   if(!name){status.textContent="Enter the student's full name.";return;}
+   if(!["Male","Female"].includes(sex)){status.textContent="Please select Male or Female.";return;}
+   if(!/^[A-D]$/.test(arm)){status.textContent="Please select a valid arm.";return;}
+   if(!accessCode){status.textContent="Enter the CBT access code supplied by the school.";return;}
+   submitButton.disabled=true;submitButton.textContent="Checking details…";status.textContent="Verifying the access code and preparing your exam…";
+   try{
+     const {data:bank,error:bankError}=await sb.from("question_banks").select("*,subjects(name)").eq("id",bankId).eq("active",true).single();
+     if(bankError)throw bankError;
+     const {data:q,error:qe}=await sb.from("questions").select("*").eq("bank_id",bankId).order("id",{ascending:true}).limit(50);
+     if(qe)throw qe;
+     if(!q?.length)throw new Error("This question bank has no questions yet. Please contact your teacher.");
+     const {data:use,error}=await sb.rpc("use_cbt_code",{p_code:accessCode,p_bank_id:bankId});
+     if(error)throw error;
+     if(!use?.ok)throw new Error(use?.message||"Invalid CBT access code.");
+     candidateDetails={name,className:candidateClass,sex,arm};
+     currentExam={bank,questions:q.slice(0,Math.min(50,q.length)),codeId:use.code_id,started:Date.now(),deadline:Date.now()+Number(bank.duration_minutes||60)*60000};
+     examAnswers={};
+     closeModal();
+     renderQuestion(0);startObjectiveClock();
+   }catch(err){
+     status.textContent=err?.message||"Unable to prepare the exam. Please try again.";
+     submitButton.disabled=false;submitButton.textContent="Verify details and proceed →";
+   }
+ };
 }
 function startObjectiveClock(){
  clearInterval(objectiveTimer);
