@@ -77,7 +77,14 @@ function navItems(){
   ["profile","◉","My Profile"]
  ];
  if(profile?.role==="teacher")base.splice(2,0,["teacher","▣","Teacher Studio"]);
- if(profile?.role==="admin")base.splice(2,0,["admin","⚙","Admin Control"]);
+ if(profile?.role==="admin"){
+  base.splice(2,0,
+   ["admin","⚙","Admin Control"],
+   ["admin-students","🎓","Students"],
+   ["admin-teachers","👩‍🏫","Teachers"],
+   ["admin-admins","🛡","Admins"]
+  );
+ }
  return base;
 }
 function renderNav(){
@@ -105,7 +112,7 @@ sb.auth.onAuthStateChange((_event,session)=>{if(session&&!currentUser)boot()});
 
 async function renderPage(page){
  $("content").innerHTML=`<div class="empty">Loading...</div>`;
- const titles={dashboard:["Dashboard","Your learning space"],courses:["My Courses","Explore your class subjects and lessons"],cbt:["CBT Centre","Practice and take secure computer-based tests"],teacher:["Teacher Studio","Create lessons, audio lectures and assignments"],admin:["Admin Control","Manage learners, teachers, CBT and school activity"],profile:["My Profile","Manage your account and profile picture"],messages:["Messages","Conversations with teachers and students"]};
+ const titles={dashboard:["Dashboard","Your learning space"],courses:["My Courses","Explore your class subjects and lessons"],cbt:["CBT Centre","Practice and take secure computer-based tests"],teacher:["Teacher Studio","Create lessons, audio lectures and assignments"],admin:["Admin Control","Manage learners, teachers, CBT and school activity"],"admin-students":["Students","Manage student accounts and classes"],"admin-teachers":["Teachers","Manage teacher accounts and assignments"],"admin-admins":["Admins","Review administrator accounts"],profile:["My Profile","Manage your account and profile picture"],messages:["Messages","Conversations with teachers and students"]};
  $("pageTitle").textContent=titles[page]?.[0]||"Dashboard";$("pageSub").textContent=titles[page]?.[1]||"";
  try{
   if(page==="dashboard")await dashboard();
@@ -113,6 +120,9 @@ async function renderPage(page){
   if(page==="cbt")await cbtCentre();
   if(page==="teacher")await teacherStudio();
   if(page==="admin")await adminPanel();
+  if(page==="admin-students")await adminPeoplePage("student");
+  if(page==="admin-teachers")await adminPeoplePage("teacher");
+  if(page==="admin-admins")await adminPeoplePage("admin");
   if(page==="profile")await profilePage();
   if(page==="messages")await messagesPage();
  }catch(e){$("content").innerHTML=`<div class="card"><strong>Something went wrong.</strong><p class="muted">${esc(e.message)}</p></div>`}
@@ -595,6 +605,42 @@ async function stopGeneralAnnouncement(){
  if(error)return toast("Unable to stop announcement: "+error.message,true);
  toast("Announcement stopped.");
  await adminPanel();
+}
+
+async function adminPeoplePage(role){
+ if(profile?.role!=="admin")return navigate("dashboard");
+ const roleLabel=role==="student"?"Students":role==="teacher"?"Teachers":"Administrators";
+ const {data:people,error}=await sb.from("profiles").select("*").eq("role",role).order("created_at",{ascending:false}).limit(500);
+ if(error)throw error;
+ const actionButtons=(p)=>`<button class="btn btn-soft" onclick="adminChangeClass('${p.id}')" ${role!=="student"?"disabled":""}>Change class</button>
+ <button class="btn btn-soft" onclick="adminToggleActive('${p.id}',${p.is_active!==false})">${p.is_active===false?"Restore access":"Disable access"}</button>`;
+ $("content").innerHTML=`<div class="page-head"><div><h1>${roleLabel}</h1><p>Manage ${roleLabel.toLowerCase()} separately from other account types.</p></div><button class="btn btn-soft" onclick="navigate('admin')">← Admin Control</button></div>
+ <div class="card stat"><strong>${people?.length||0}</strong><span>${roleLabel} accounts</span></div>
+ <div class="card" style="margin-top:18px"><div class="table-wrap"><table class="data-table"><thead><tr><th>Name</th><th>Email</th>${role==="student"?"<th>Class</th>":""}<th>Status</th><th>Actions</th></tr></thead><tbody>
+ ${(people||[]).map(p=>`<tr><td>${esc([p.first_name,p.last_name].filter(Boolean).join(" ")||"Unnamed user")}</td><td>${esc(p.email||"")}</td>${role==="student"?`<td>${esc(p.class||"Not assigned")}</td>`:""}<td><span class="badge ${p.is_active===false?"red":"green"}">${p.is_active===false?"Inactive":"Active"}</span></td><td><div style="display:flex;gap:6px;flex-wrap:wrap">${actionButtons(p)}</div></td></tr>`).join("")||`<tr><td colspan="${role==="student"?5:4}">No ${roleLabel.toLowerCase()} found.</td></tr>`}
+ </tbody></table></div></div>`;
+}
+async function adminChangeClass(id){
+ if(profile?.role!=="admin")return toast("Only administrators can change a student's class.",true);
+ const choices=["JSS 1","JSS 2","JSS 3","SS 1","SS 2","SS 3"];
+ const value=prompt("Enter the student's new class:\n"+choices.join(", "));
+ if(!value)return;
+ const normalized=choices.find(c=>c.toLowerCase()===value.trim().toLowerCase());
+ if(!normalized)return toast("Choose one of: "+choices.join(", "),true);
+ const {error}=await sb.from("profiles").update({class:normalized}).eq("id",id);
+ if(error)return toast("Unable to change class: "+error.message,true);
+ toast("Student class updated.");
+ await adminPeoplePage("student");
+}
+async function adminToggleActive(id,currentActive){
+ if(profile?.role!=="admin")return toast("Only administrators can change account access.",true);
+ const action=currentActive?"disable":"restore";
+ if(!confirm(`Are you sure you want to ${action} this account?`))return;
+ const {error}=await sb.from("profiles").update({is_active:!currentActive}).eq("id",id);
+ if(error)return toast("Unable to update account: "+error.message,true);
+ toast(currentActive?"Account disabled.":"Account restored.");
+ const page=currentPage==="admin-students"?"student":currentPage==="admin-teachers"?"teacher":"admin";
+ await adminPeoplePage(page);
 }
 
 async function adminPanel(){
