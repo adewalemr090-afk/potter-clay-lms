@@ -552,7 +552,28 @@ async function adminPanel(){
  <div class="grid grid-4"><div class="card stat"><strong>${profiles?.length||0}</strong><span>Users</span></div><div class="card stat"><strong>${profiles?.filter(x=>x.role==="student").length||0}</strong><span>Students</span></div><div class="card stat"><strong>${profiles?.filter(x=>x.role==="teacher").length||0}</strong><span>Teachers</span></div><div class="card stat"><strong>${attempts?.length||0}</strong><span>Recent CBT attempts</span></div></div>
  <div class="grid grid-2" style="margin-top:20px"><div class="card"><h2>CBT access codes</h2><div class="table-wrap"><table class="data-table"><thead><tr><th>Code</th><th>Bank</th><th>Uses</th><th>Status</th></tr></thead><tbody>${(codes||[]).map(c=>`<tr><td><strong>${esc(c.code)}</strong></td><td>${esc(c.question_banks?.name||"")}</td><td>${c.uses}/${c.max_uses}</td><td><span class="badge ${c.active&&c.uses<c.max_uses?"green":"red"}">${c.active&&c.uses<c.max_uses?"Active":"Closed"}</span></td></tr>`).join("")||"<tr><td colspan='4'>No codes.</td></tr>"}</tbody></table></div></div>
  <div class="card"><h2>Recent CBT activity</h2><div class="table-wrap"><table class="data-table"><thead><tr><th>Student</th><th>Test</th><th>Score</th></tr></thead><tbody>${(attempts||[]).map(a=>`<tr><td>${esc((a.profiles?.first_name||"")+" "+(a.profiles?.last_name||""))}</td><td>${esc(a.question_banks?.name||"")}</td><td><strong>${a.score}/${a.total}</strong></td></tr>`).join("")||"<tr><td colspan='3'>No attempts.</td></tr>"}</tbody></table></div></div></div>
- <div class="card" style="margin-top:20px"><h2>User accounts</h2><div class="table-wrap"><table class="data-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Class</th></tr></thead><tbody>${(profiles||[]).map(p=>`<tr><td>${esc(p.first_name+" "+p.last_name)}</td><td>${esc(p.email||"")}</td><td><span class="badge">${esc(p.role)}</span></td><td>${esc(p.class||"—")}</td></tr>`).join("")}</tbody></table></div></div>`;
+ <div class="card" style="margin-top:20px"><h2>User accounts</h2><p class="muted">Administrators can promote students to the next class when a new school session begins.</p><div class="table-wrap"><table class="data-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Class</th><th>Action</th></tr></thead><tbody>${(profiles||[]).map(p=>`<tr><td>${esc(p.first_name+" "+p.last_name)}</td><td>${esc(p.email||"")}</td><td><span class="badge">${esc(p.role)}</span></td><td>${esc(p.class||"—")}</td><td>${p.role==="student"?`<button class="btn btn-soft" onclick="changeStudentClass('${p.id}')">Change class</button>`:"—"}</td></tr>`).join("")}</tbody></table></div></div>`;
+}
+
+async function changeStudentClass(studentId){
+ if(profile?.role!=="admin")return toast("Administrator access required.",true);
+ const {data:student,error}=await sb.from("profiles").select("id,first_name,last_name,email,role,class").eq("id",studentId).maybeSingle();
+ if(error||!student)return toast(error?.message||"Student account not found.",true);
+ if(student.role!=="student")return toast("Only student accounts can be promoted using this action.",true);
+ const classes=["JSS 1","JSS 2","JSS 3","SS 1","SS 2","SS 3"];
+ const options=classes.map(c=>`<option value="${c}" ${student.class===c?"selected":""}>${c}</option>`).join("");
+ showModal(`<h2>Change student's class</h2><p class="muted">${esc(student.first_name+" "+student.last_name)} · ${esc(student.email||"")}</p><p>Current class: <strong>${esc(student.class||"Not assigned")}</strong></p><form id="changeStudentClassForm" class="field"><label>New class<select id="newStudentClass" required>${options}</select></label><p class="muted">This updates the student's official class. Check subject access, teacher assignments and any active exams after promotion.</p><button class="btn btn-primary" type="submit">Save class change</button></form>`);
+ $("changeStudentClassForm").onsubmit=async e=>{
+  e.preventDefault();
+  const newClass=$("newStudentClass").value;
+  if(!classes.includes(newClass))return toast("Select a valid school class.",true);
+  if(newClass===student.class)return toast("The student is already in that class.",true);
+  if(!confirm(`Change ${student.first_name} ${student.last_name} from ${student.class||"unassigned"} to ${newClass}?`))return;
+  const {data:updated,error:updateError}=await sb.from("profiles").update({class:newClass}).eq("id",student.id).eq("role","student").select("id,class").maybeSingle();
+  if(updateError)return toast(updateError.message,true);
+  if(!updated)return toast("The class was not changed. Check administrator permissions and try again.",true);
+  closeModal();toast(`Student promoted to ${newClass}.`);await adminPanel();
+ };
 }
 
 async function manageTeacherAssignments(){
