@@ -56,6 +56,7 @@ function navItems(){
   ["dashboard","⌂","Dashboard"],
   ["courses","▦","My Courses"],
   ["cbt","✓","CBT Centre"],
+  ["messages","✉","Messages"],
   ["profile","◉","My Profile"]
  ];
  if(profile?.role==="teacher")base.splice(2,0,["teacher","▣","Teacher Studio"]);
@@ -87,7 +88,7 @@ sb.auth.onAuthStateChange((_event,session)=>{if(session&&!currentUser)boot()});
 
 async function renderPage(page){
  $("content").innerHTML=`<div class="empty">Loading...</div>`;
- const titles={dashboard:["Dashboard","Your learning space"],courses:["My Courses","Explore your class subjects and lessons"],cbt:["CBT Centre","Practice and take secure computer-based tests"],teacher:["Teacher Studio","Create lessons, audio lectures and assignments"],admin:["Admin Control","Manage learners, teachers, CBT and school activity"],profile:["My Profile","Manage your account and profile picture"]};
+ const titles={dashboard:["Dashboard","Your learning space"],courses:["My Courses","Explore your class subjects and lessons"],cbt:["CBT Centre","Practice and take secure computer-based tests"],teacher:["Teacher Studio","Create lessons, audio lectures and assignments"],admin:["Admin Control","Manage learners, teachers, CBT and school activity"],profile:["My Profile","Manage your account and profile picture"],messages:["Messages","Conversations with teachers and students"]};
  $("pageTitle").textContent=titles[page]?.[0]||"Dashboard";$("pageSub").textContent=titles[page]?.[1]||"";
  try{
   if(page==="dashboard")await dashboard();
@@ -96,6 +97,7 @@ async function renderPage(page){
   if(page==="teacher")await teacherStudio();
   if(page==="admin")await adminPanel();
   if(page==="profile")await profilePage();
+  if(page==="messages")await messagesPage();
  }catch(e){$("content").innerHTML=`<div class="card"><strong>Something went wrong.</strong><p class="muted">${esc(e.message)}</p></div>`}
 }
 
@@ -130,18 +132,26 @@ async function openCourse(id){
  $("content").innerHTML=`<div class="page-head"><div><span class="eyebrow">${esc(s.class)}</span><h1>${esc(s.name)}</h1><p>${esc(s.description||"")}</p></div><button class="btn btn-soft" onclick="navigate('courses')">← Courses</button></div>
  <div class="lesson-list">${(lessons||[]).map(l=>`<div class="lesson-row"><div><span class="tag">LESSON</span><h3>${esc(l.title)}</h3><p>${esc(l.summary||"Lesson resource")} · ${l.duration_minutes||30} min</p></div><div class="lesson-actions"><button class="btn btn-primary" onclick="openLesson('${l.id}')">Open</button>${l.notes_url?`<a class="btn btn-soft" target="_blank" href="${l.notes_url}">Notes</a>`:""}${l.audio_url?`<audio controls src="${l.audio_url}" style="height:34px;max-width:180px"></audio>`:""}</div></div>`).join("")||'<div class="empty">No lessons have been published for this subject yet.</div>'}</div>`;
 }
-function renderCommentTree(comments, names, parentId = null, depth = 0){
+function renderCommentTree(comments, names, parentId = null, depth = 0, moderate = false, lessonId = "", subjectId = "", className = "", replyEnabled = true){
  const children=(comments||[]).filter(c=>(c.parent_comment_id||null)===(parentId||null));
  if(!children.length) return '';
  return children.map(c=>`<div class="comment" style="margin:12px 0 12px ${Math.min(depth,3)*18}px;padding:12px;border-left:3px solid var(--line);border-radius:6px">
   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><strong>${esc(names[c.user_id]||"LMS member")}</strong><span class="tag">${esc(c.author_role||"member")}</span><small class="muted">${c.created_at?new Date(c.created_at).toLocaleString():""}</small></div>
   <p style="white-space:pre-wrap;margin:8px 0">${esc(c.body)}</p>
-  <form class="replyForm field" data-parent-id="${esc(c.id)}" style="margin-top:8px">
-   <label>Reply<textarea name="replyBody" rows="2" required maxlength="5000" placeholder="Reply to this comment..."></textarea></label>
-   <button class="btn btn-soft" type="submit">Reply</button>
-  </form>
-  ${renderCommentTree(comments,names,c.id,depth+1)}
+  ${replyEnabled?`<form class="replyForm field" data-parent-id="${esc(c.id)}" style="margin-top:8px"><label>Reply<textarea name="replyBody" rows="2" required maxlength="5000" placeholder="Reply to this comment..."></textarea></label><button class="btn btn-soft" type="submit">Reply</button></form>`:""}
+  ${moderate?`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px"><button class="btn btn-soft" type="button" onclick="deleteLessonComment('${c.id}','${lessonId}')">Delete comment</button>${c.author_role==="student"?`<button class="btn btn-soft" type="button" onclick="muteLessonStudent('${c.user_id}','${subjectId}','${className}')">Mute student for this subject</button>`:""}</div>`:""}
+  ${renderCommentTree(comments,names,c.id,depth+1,moderate,lessonId,subjectId,className,replyEnabled)}
  </div>`).join('');
+}
+
+async function canModerateLesson(lesson){
+ if(profile?.role==="admin")return true;
+ if(profile?.role!=="teacher")return false;
+ const {data:subject}=await sb.from("subjects").select("id,class").eq("id",lesson.subject_id).maybeSingle();
+ if(!subject)return false;
+ const {data:assignments,error}=await sb.from("teacher_subject_assignments").select("subject_id,class").eq("teacher_id",currentUser.id).eq("subject_id",subject.id);
+ if(error)return false;
+ return (assignments||[]).some(a=>!a.class||a.class===subject.class);
 }
 
 async function openLesson(id){
@@ -150,24 +160,109 @@ async function openLesson(id){
  const {data:comments,error:commentError}=await sb.from("comments").select("id,body,created_at,user_id,lesson_id,parent_comment_id").eq("lesson_id",id).order("created_at");
  if(commentError){toast("Unable to load discussion: "+commentError.message,true);return;}
  const ids=[...new Set((comments||[]).map(c=>c.user_id))];let names={};let roles={};
- if(ids.length){const {data:p,error:profileError}=await sb.from("profiles").select("id,first_name,last_name,role").in("id",ids);if(profileError){toast("Comments loaded, but member names could not be loaded.",true)}(p||[]).forEach(x=>{names[x.id]=`${x.first_name||""} ${x.last_name||""}`.trim()||"LMS member";roles[x.id]=x.role||"member"})}
+ if(ids.length){const {data:p,error:profileError}=await sb.rpc("get_subject_member_names",{p_subject_id:l.subject_id,p_user_ids:ids});if(profileError){toast("Comments loaded, but member names could not be loaded: "+profileError.message,true)}(p||[]).forEach(x=>{names[x.id]=`${x.first_name||""} ${x.last_name||""}`.trim()||"LMS member";roles[x.id]=x.role||"member"})}
  (comments||[]).forEach(c=>c.author_role=roles[c.user_id]||"member");
- const canReply=!!currentUser;
+ const moderate=await canModerateLesson(l);
+ let muted=false;
+ if(profile?.role==="student"){
+  const {data:mutes,error:muteError}=await sb.from("student_mutes").select("id,muted_until,reason").eq("student_id",currentUser.id).eq("subject_id",l.subject_id);
+  if(!muteError)muted=(mutes||[]).some(m=>!m.muted_until||new Date(m.muted_until)>new Date());
+ }
  showModal(`<span class="eyebrow">${esc(l.subjects?.class||"")}</span><h2>${esc(l.title)}</h2><p class="muted">${esc(l.summary||"")}</p><div class="lesson-content" style="line-height:1.8">${esc(l.content||"No lesson text has been added yet.").replace(/\n/g,"<br>")}</div>
  ${l.notes_url?`<p><a class="btn btn-soft" target="_blank" rel="noopener" href="${esc(l.notes_url)}">Open lesson document</a></p>`:""}
  ${l.audio_url?`<audio controls src="${esc(l.audio_url)}" style="width:100%;margin:20px 0"></audio>`:""}
  <hr style="border:0;border-top:1px solid var(--line);margin:24px 0"><h3>Discussion & replies</h3>
- <div id="commentsThread">${renderCommentTree(comments||[],names)||'<p class="muted">Be the first to comment.</p>'}</div>
- ${canReply?`<form id="commentForm" class="field"><label>Add a comment<textarea id="commentBody" rows="3" required maxlength="5000" placeholder="Ask a question or share your thought..."></textarea></label><button class="btn btn-primary" type="submit">Post comment</button></form>`:""}`);
+ ${muted?'<div class="card"><strong>Commenting is temporarily disabled for this subject.</strong><p class="muted">Please contact your teacher or school administrator if you need help.</p></div>':''}
+ <div id="commentsThread">${renderCommentTree(comments||[],names,null,0,moderate,id,l.subject_id,l.subjects?.class||"",!muted)||'<p class="muted">Be the first to comment.</p>'}</div>
+ ${currentUser&&!muted?`<form id="commentForm" class="field"><label>Add a comment<textarea id="commentBody" rows="3" required maxlength="5000" placeholder="Ask a question or share your thought..."></textarea></label><button class="btn btn-primary" type="submit">Post comment</button></form>`:""}`);
  const submitComment=async(body,parentId=null)=>{
   const clean=String(body||"").trim();if(!clean)return toast("Please enter a comment or reply.",true);
   const payload={lesson_id:id,user_id:currentUser.id,body:clean};if(parentId)payload.parent_comment_id=parentId;
   const {error}=await sb.from("comments").insert(payload);
-  if(error){toast("Could not post. Check the discussion permissions: "+error.message,true);return;}
+  if(error){toast("Could not post. Check whether you are muted or whether discussion permissions are configured: "+error.message,true);return;}
   toast(parentId?"Reply posted.":"Comment posted.");await openLesson(id);
  };
  if($("commentForm"))$("commentForm").onsubmit=async e=>{e.preventDefault();await submitComment($("commentBody").value);};
  document.querySelectorAll(".replyForm").forEach(form=>form.onsubmit=async e=>{e.preventDefault();const body=form.querySelector('[name="replyBody"]').value;await submitComment(body,form.dataset.parentId);});
+}
+
+async function deleteLessonComment(commentId,lessonId){
+ if(!confirm("Delete this comment and its replies? This cannot be undone."))return;
+ const {error}=await sb.from("comments").delete().eq("id",commentId);
+ if(error)return toast("Unable to delete comment: "+error.message,true);
+ toast("Comment deleted.");await openLesson(lessonId);
+}
+
+async function muteLessonStudent(studentId,subjectId,className){
+ if(!["teacher","admin"].includes(profile?.role))return toast("Teacher access required.",true);
+ showModal(`<h2>Mute student for this subject</h2><p class="muted">This prevents the student from posting or replying in discussions for this subject while the mute is active.</p><form id="muteForm" class="field"><label>Duration<select id="muteDuration"><option value="0">Until manually unmuted</option><option value="1">24 hours</option><option value="7">7 days</option><option value="30">30 days</option></select></label><label>Reason (optional)<textarea id="muteReason" rows="3" maxlength="500"></textarea></label><button class="btn btn-primary" type="submit">Confirm mute</button></form>`);
+ $("muteForm").onsubmit=async e=>{e.preventDefault();const days=Number($("muteDuration").value);const until=days?new Date(Date.now()+days*86400000).toISOString():null;
+  const {error}=await sb.from("student_mutes").upsert({teacher_id:currentUser.id,student_id:studentId,subject_id:subjectId,class:className,muted_until:until,reason:$("muteReason").value.trim()||null},{onConflict:"teacher_id,student_id,subject_id"});
+  if(error)return toast("Could not mute student: "+error.message,true);closeModal();toast("Student muted for this subject.");
+ };
+}
+
+async function unmuteClassStudent(studentId,subjectId){
+ const {error}=await sb.from("student_mutes").delete().eq("teacher_id",currentUser.id).eq("student_id",studentId).eq("subject_id",subjectId);
+ if(error)return toast("Could not unmute student: "+error.message,true);toast("Student unmuted.");await loadTeacherClassroomContent(subjectId);
+}
+
+async function teacherClassroom(){
+ if(!["teacher","admin"].includes(profile.role))return toast("Teacher or administrator access required.",true);
+ let subjects=[];
+ if(profile.role==="admin"){
+  const {data,error}=await sb.from("subjects").select("id,name,class").order("class").order("name");if(error)return toast(error.message,true);subjects=data||[];
+ }else{
+  const {data:as,error}=await sb.from("teacher_subject_assignments").select("subject_id,class").eq("teacher_id",currentUser.id);if(error)return toast(error.message,true);
+  const {data:ss,error:se}=await sb.from("subjects").select("id,name,class").order("class").order("name");if(se)return toast(se.message,true);
+  subjects=(ss||[]).filter(s=>(as||[]).some(a=>a.subject_id===s.id&&(!a.class||a.class===s.class)));
+ }
+ if(!subjects.length)return toast("No subjects have been assigned to this account.",true);
+ showModal(`<h2>Classroom chat & moderation</h2><p class="muted">Manage discussions and contact students for subjects you teach.</p><div class="field"><label>Assigned subject<select id="classroomSubject">${subjects.map(s=>`<option value="${s.id}">${esc(s.class)} · ${esc(s.name)}</option>`).join("")}</select></label></div><div id="classroomStudents"><p class="muted">Loading students…</p></div>`);
+ $("classroomSubject").onchange=()=>loadTeacherClassroomContent($("classroomSubject").value);
+ await loadTeacherClassroomContent(subjects[0].id);
+}
+
+async function loadTeacherClassroomContent(subjectId){
+ const host=$("classroomStudents");if(!host)return;
+ const {data:subject,error:se}=await sb.from("subjects").select("id,name,class").eq("id",subjectId).single();if(se)return host.innerHTML=`<p class="muted">${esc(se.message)}</p>`;
+ const {data:students,error}=await sb.rpc("get_subject_students",{p_subject_id:subjectId});
+ if(error)return host.innerHTML=`<p class="muted">Could not load students: ${esc(error.message)}</p>`;
+ const {data:mutes,error:me}=await sb.from("student_mutes").select("student_id,muted_until,reason,teacher_id").eq("subject_id",subjectId).eq("teacher_id",currentUser.id);
+ if(me)return host.innerHTML=`<p class="muted">Could not load moderation status: ${esc(me.message)}</p>`;
+ host.innerHTML=`<h3>${esc(subject.class)} · ${esc(subject.name)}</h3><div class="lesson-list">${(students||[]).map(st=>{const m=(mutes||[]).find(x=>x.student_id===st.id&&(!x.muted_until||new Date(x.muted_until)>new Date()));return `<div class="lesson-row"><div><strong>${esc((st.first_name||"")+" "+(st.last_name||""))}</strong><p class="muted">${esc(st.class||"")} ${esc(st.arm||"")}${m?' · <strong>Muted</strong>':''}</p></div><div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-primary" onclick="openConversation('${subjectId}','${st.id}')">${'Start conversation'}</button>${m?`<button class="btn btn-soft" onclick="unmuteClassStudent('${st.id}','${subjectId}')">Unmute</button>`:`<button class="btn btn-soft" onclick="muteLessonStudent('${st.id}','${subjectId}','${subject.class}')">Mute</button>`}</div></div>`}).join("")||'<div class="empty">No students are registered in this class.</div>'}</div>`;
+}
+
+async function messagesPage(){
+ if(!currentUser)return;
+ const {data:messages,error}=await sb.from("direct_messages").select("id,subject_id,sender_id,recipient_id,body,created_at").or(`sender_id.eq.${currentUser.id},recipient_id.eq.${currentUser.id}`).order("created_at",{ascending:false}).limit(500);
+ if(error){$("content").innerHTML=`<div class="card"><h2>Messages unavailable</h2><p>${esc(error.message)}</p><p class="muted">The messaging database migration may not have been run yet.</p></div>`;return;}
+ const list=messages||[];const userIds=[...new Set(list.map(m=>m.sender_id===currentUser.id?m.recipient_id:m.sender_id))];const subjectIds=[...new Set(list.map(m=>m.subject_id))];let names={},subjects={};
+ if(userIds.length){for(const subjectId of subjectIds){const idsForSubject=[...new Set(list.filter(m=>m.subject_id===subjectId).map(m=>m.sender_id===currentUser.id?m.recipient_id:m.sender_id))];const {data:ps}=await sb.rpc("get_subject_member_names",{p_subject_id:subjectId,p_user_ids:idsForSubject});(ps||[]).forEach(p=>names[p.id]=`${p.first_name||""} ${p.last_name||""}`.trim()||"LMS member");}}
+ if(subjectIds.length){const {data:ss}=await sb.from("subjects").select("id,name,class").in("id",subjectIds);(ss||[]).forEach(s=>subjects[s.id]=s);}
+ const groups=new Map();for(const m of list){const other=m.sender_id===currentUser.id?m.recipient_id:m.sender_id;const key=`${m.subject_id}:${other}`;if(!groups.has(key))groups.set(key,{subjectId:m.subject_id,otherId:other,last:m});}
+ $("content").innerHTML=`<div class="page-head"><div><h1>Messages</h1><p>Conversations about your classes and subjects.</p></div>${profile.role==="teacher"||profile.role==="admin"?`<button class="btn btn-primary" onclick="teacherClassroom()">+ Start conversation</button>`:""}</div><div class="lesson-list">${[...groups.values()].map(g=>`<div class="lesson-row"><div><strong>${esc(names[g.otherId]||"LMS member")}</strong><p>${esc(subjects[g.subjectId]?.class||"")} · ${esc(subjects[g.subjectId]?.name||"Subject")}</p><p class="muted">${esc(g.last.body.slice(0,120))} · ${new Date(g.last.created_at).toLocaleString()}</p></div><button class="btn btn-primary" onclick="openConversation('${g.subjectId}','${g.otherId}')">Open conversation</button></div>`).join("")||'<div class="empty">No conversations yet. Your teacher can start one for an assigned subject.</div>'}</div>`;
+}
+
+async function openConversation(subjectId,otherId){
+ const {data:subject,error:se}=await sb.from("subjects").select("id,name,class").eq("id",subjectId).single();
+ if(se)return toast(se.message||"Conversation could not be opened.",true);
+ const {data:memberRows,error:memberError}=await sb.rpc("get_subject_member_names",{p_subject_id:subjectId,p_user_ids:[otherId]});
+ if(memberError||!memberRows?.length)return toast(memberError?.message||"This person is not available for a conversation in this subject.",true);
+ const other=memberRows[0];
+ let mutedHere=false;
+ if(profile.role==="student"){
+  const {data:mutes}=await sb.from("student_mutes").select("id,muted_until").eq("student_id",currentUser.id).eq("subject_id",subjectId);
+  mutedHere=(mutes||[]).some(m=>!m.muted_until||new Date(m.muted_until)>new Date());
+ }
+ const load=async()=>{
+  const {data:messages,error}=await sb.from("direct_messages").select("id,sender_id,recipient_id,body,created_at").eq("subject_id",subjectId).or(`and(sender_id.eq.${currentUser.id},recipient_id.eq.${otherId}),and(sender_id.eq.${otherId},recipient_id.eq.${currentUser.id})`).order("created_at");
+  if(error)return toast("Could not load conversation: "+error.message,true);
+  const meName=`${profile.first_name||""} ${profile.last_name||""}`.trim()||"You",otherName=`${other?.first_name||""} ${other?.last_name||""}`.trim()||"LMS member";
+  showModal(`<h2>${esc(otherName)}</h2><p class="muted">${esc(subject.class)} · ${esc(subject.name)}</p><div style="max-height:45vh;overflow:auto;padding:10px;background:var(--surface);border-radius:8px">${(messages||[]).map(m=>`<div style="padding:10px;margin:8px 0;border-radius:8px;background:${m.sender_id===currentUser.id?'var(--line)':'var(--card)'}"><strong>${m.sender_id===currentUser.id?esc(meName):esc(otherName)}</strong><p style="white-space:pre-wrap">${esc(m.body)}</p><small class="muted">${new Date(m.created_at).toLocaleString()}</small></div>`).join("")||'<p class="muted">Start the conversation with a helpful message.</p>'}</div>${mutedHere?'<p class="muted">Messaging is temporarily disabled for this subject while your mute is active.</p>':`<form id="directMessageForm" class="field" style="margin-top:14px"><label>Message<textarea id="directMessageBody" rows="3" maxlength="5000" required placeholder="Write your message..."></textarea></label><button class="btn btn-primary" type="submit">Send message</button></form>`}`);
+  if($("directMessageForm"))$("directMessageForm").onsubmit=async e=>{e.preventDefault();const body=$("directMessageBody").value.trim();if(!body)return;const {error:ie}=await sb.from("direct_messages").insert({subject_id:subjectId,sender_id:currentUser.id,recipient_id:otherId,body});if(ie)return toast("Could not send message: "+ie.message,true);await load();};
+ };
+ await load();
 }
 
 async function cbtCentre(){
@@ -333,9 +428,16 @@ async function uploadAvatar(){
 async function teacherStudio(){
  if(!["teacher","admin"].includes(profile.role))return navigate("dashboard");
  const {data:subjects,error}=await sb.from("subjects").select("*").order("class").order("name");if(error)throw error;
- const {data:lessons}=await sb.from("lessons").select("*,subjects(name,class)").eq("teacher_id",currentUser.id).order("created_at",{ascending:false});
+ let lessons=[];
+ if(profile.role==="admin"){
+  const {data:allLessons,error:le}=await sb.from("lessons").select("*,subjects(name,class)").order("created_at",{ascending:false});if(le)throw le;lessons=allLessons||[];
+ }else{
+  const {data:as,error:ae}=await sb.from("teacher_subject_assignments").select("subject_id,class").eq("teacher_id",currentUser.id);if(ae)throw ae;
+  const {data:allLessons,error:le}=await sb.from("lessons").select("*,subjects(name,class)").order("created_at",{ascending:false});if(le)throw le;
+  lessons=(allLessons||[]).filter(l=>(as||[]).some(a=>a.subject_id===l.subject_id&&(!a.class||a.class===l.subjects?.class)));
+ }
  $("content").innerHTML=`<div class="page-head"><div><h1>Teacher Studio</h1><p>Publish lessons, create objective/theory examinations and mark physical theory answer booklets.</p></div><button class="btn btn-primary" onclick="newLesson()">+ New lesson</button></div>
- <div class="grid grid-2"><div class="card"><h2>My lessons</h2><div class="lesson-list">${(lessons||[]).map(l=>`<div class="lesson-row"><div><h3>${esc(l.title)}</h3><p>${esc(l.subjects?.class||"")} · ${esc(l.subjects?.name||"")}</p></div><span class="badge ${l.published?"green":""}">${l.published?"Published":"Draft"}</span></div>`).join("")||'<div class="empty">No lessons yet.</div>'}</div></div><div class="card"><h2>Examination tools</h2><p class="muted">Create theory questions and enter scores after marking physical answer booklets.</p><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary" onclick="manageTheoryQuestions()">+ Theory questions</button><button class="btn btn-soft" onclick="teacherResults()">Results & marking</button><button class="btn btn-soft" onclick="newAssignment()">+ Assignment</button></div></div></div>`;
+ <div class="grid grid-2"><div class="card"><h2>My lessons</h2><div class="lesson-list">${(lessons||[]).map(l=>`<div class="lesson-row"><div><h3>${esc(l.title)}</h3><p>${esc(l.subjects?.class||"")} · ${esc(l.subjects?.name||"")}</p></div><div style="display:flex;gap:6px;flex-wrap:wrap"><span class="badge ${l.published?"green":""}">${l.published?"Published":"Draft"}</span><button class="btn btn-soft" onclick="openLesson('${l.id}')">Discussion</button></div></div>`).join("")||'<div class="empty">No lessons yet.</div>'}</div></div><div class="card"><h2>Classroom tools</h2><p class="muted">Moderate comments, mute students for a subject, initiate conversations, and publish audio lectures for your assigned subjects.</p><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary" onclick="teacherClassroom()">Classroom chat & moderation</button><button class="btn btn-soft" onclick="navigate('messages')">Messages</button><button class="btn btn-soft" onclick="manageTheoryQuestions()">+ Theory questions</button><button class="btn btn-soft" onclick="teacherResults()">Results & marking</button><button class="btn btn-soft" onclick="newAssignment()">+ Assignment</button></div></div></div>`;
 }
 async function manageTheoryQuestions(){
  if(!["teacher","admin"].includes(profile.role))return toast("Teacher or administrator access required.",true);
@@ -414,20 +516,29 @@ async function newAssignment(){
 }
 
 async function newLesson(){
- const {data:subjects}=await sb.from("subjects").select("*").order("class").order("name");
- showModal(`<h2>Create lesson</h2><form id="lessonForm" class="field">
- <label>Subject<select id="ls">${(subjects||[]).map(s=>`<option value="${s.id}">${esc(s.class)} · ${esc(s.name)}</option>`).join("")}</select></label>
- <label>Title<input id="lt" required></label><label>Summary<input id="lm"></label><label>Lesson content<textarea id="lc" rows="8" required></textarea></label>
- <label>Lesson note / PDF<input id="ln" type="file" accept=".pdf,.doc,.docx"></label>
- <label>Audio lecture<input id="la" type="file" accept="audio/*"></label>
- <label>Duration (minutes)<input id="ld" type="number" value="30"></label>
- <button class="btn btn-primary" type="submit">Publish lesson</button></form>`);
- $("lessonForm").onsubmit=async e=>{e.preventDefault();const note=$("ln").files[0],audio=$("la").files[0];let noteUrl=null,audioUrl=null;
-  if(note){const path=`${currentUser.id}/${Date.now()}-${note.name}`;const r=await sb.storage.from("lesson-files").upload(path,note);if(r.error)return toast(r.error.message,true);noteUrl=sb.storage.from("lesson-files").getPublicUrl(path).data.publicUrl}
-  if(audio){const path=`${currentUser.id}/${Date.now()}-${audio.name}`;const r=await sb.storage.from("audio-lectures").upload(path,audio);if(r.error)return toast(r.error.message,true);audioUrl=sb.storage.from("audio-lectures").getPublicUrl(path).data.publicUrl}
-  const {error}=await sb.from("lessons").insert({subject_id:$("ls").value,teacher_id:currentUser.id,title:$("lt").value,summary:$("lm").value,content:$("lc").value,duration_minutes:Number($("ld").value),notes_url:noteUrl,audio_url:audioUrl,published:true});
-  if(error)toast(error.message,true);else{closeModal();toast("Lesson published.");teacherStudio()}
+ let subjects=[];
+ if(profile.role==="admin"){
+  const {data,error}=await sb.from("subjects").select("*").order("class").order("name");if(error)return toast(error.message,true);subjects=data||[];
+ }else{
+  const {data:as,error:ae}=await sb.from("teacher_subject_assignments").select("subject_id,class").eq("teacher_id",currentUser.id);if(ae)return toast(ae.message,true);
+  const {data:ss,error:se}=await sb.from("subjects").select("*").order("class").order("name");if(se)return toast(se.message,true);
+  subjects=(ss||[]).filter(s=>(as||[]).some(a=>a.subject_id===s.id&&(!a.class||a.class===s.class)));
  }
+ if(!subjects.length)return toast("You must be assigned to a subject before publishing lessons or audio lectures.",true);
+ showModal(`<h2>Create lesson / audio lecture</h2><p class="muted">Teachers can publish resources only for their assigned subjects.</p><form id="lessonForm" class="field">
+ <label>Assigned subject<select id="ls">${subjects.map(s=>`<option value="${s.id}">${esc(s.class)} · ${esc(s.name)}</option>`).join("")}</select></label>
+ <label>Title<input id="lt" required></label><label>Summary<input id="lm"></label><label>Lesson content<textarea id="lc" rows="8" placeholder="For an audio-only lecture, enter a short description." required></textarea></label>
+ <label>Lesson note / PDF<input id="ln" type="file" accept=".pdf,.doc,.docx"></label>
+ <label>Audio lecture (MP3, M4A, WAV, OGG or WEBM; max 50 MB)<input id="la" type="file" accept="audio/*"></label>
+ <label>Duration (minutes)<input id="ld" type="number" min="1" max="600" value="30" required></label>
+ <button class="btn btn-primary" type="submit">Publish lesson</button></form>`);
+ $("lessonForm").onsubmit=async e=>{e.preventDefault();const note=$("ln").files[0],audio=$("la").files[0],subjectId=$("ls").value;let noteUrl=null,audioUrl=null;
+  if(audio){if(!audio.type.startsWith("audio/"))return toast("Please select a valid audio file.",true);if(audio.size>50*1024*1024)return toast("Audio lectures must be 50 MB or smaller.",true);}
+  if(note){const path=`${currentUser.id}/${Date.now()}-${note.name}`;const r=await sb.storage.from("lesson-files").upload(path,note);if(r.error)return toast(r.error.message,true);noteUrl=sb.storage.from("lesson-files").getPublicUrl(path).data.publicUrl}
+  if(audio){const safeName=audio.name.replace(/[^a-zA-Z0-9._-]/g,"_");const path=`${subjectId}/${currentUser.id}/${Date.now()}-${safeName}`;const r=await sb.storage.from("audio-lectures").upload(path,audio,{contentType:audio.type,upsert:false});if(r.error)return toast("Audio upload failed: "+r.error.message,true);audioUrl=sb.storage.from("audio-lectures").getPublicUrl(path).data.publicUrl}
+  const {error}=await sb.from("lessons").insert({subject_id:subjectId,teacher_id:currentUser.id,title:$("lt").value.trim(),summary:$("lm").value.trim()||null,content:$("lc").value.trim(),duration_minutes:Number($("ld").value),notes_url:noteUrl,audio_url:audioUrl,published:true});
+  if(error)toast(error.message,true);else{closeModal();toast(audioUrl?"Lesson and audio lecture published.":"Lesson published.");teacherStudio()}
+ };
 }
 
 async function adminPanel(){
