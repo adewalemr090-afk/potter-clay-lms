@@ -552,7 +552,24 @@ async function adminPanel(){
  <div class="grid grid-4"><div class="card stat"><strong>${profiles?.length||0}</strong><span>Users</span></div><div class="card stat"><strong>${profiles?.filter(x=>x.role==="student").length||0}</strong><span>Students</span></div><div class="card stat"><strong>${profiles?.filter(x=>x.role==="teacher").length||0}</strong><span>Teachers</span></div><div class="card stat"><strong>${attempts?.length||0}</strong><span>Recent CBT attempts</span></div></div>
  <div class="grid grid-2" style="margin-top:20px"><div class="card"><h2>CBT access codes</h2><div class="table-wrap"><table class="data-table"><thead><tr><th>Code</th><th>Bank</th><th>Uses</th><th>Status</th></tr></thead><tbody>${(codes||[]).map(c=>`<tr><td><strong>${esc(c.code)}</strong></td><td>${esc(c.question_banks?.name||"")}</td><td>${c.uses}/${c.max_uses}</td><td><span class="badge ${c.active&&c.uses<c.max_uses?"green":"red"}">${c.active&&c.uses<c.max_uses?"Active":"Closed"}</span></td></tr>`).join("")||"<tr><td colspan='4'>No codes.</td></tr>"}</tbody></table></div></div>
  <div class="card"><h2>Recent CBT activity</h2><div class="table-wrap"><table class="data-table"><thead><tr><th>Student</th><th>Test</th><th>Score</th></tr></thead><tbody>${(attempts||[]).map(a=>`<tr><td>${esc((a.profiles?.first_name||"")+" "+(a.profiles?.last_name||""))}</td><td>${esc(a.question_banks?.name||"")}</td><td><strong>${a.score}/${a.total}</strong></td></tr>`).join("")||"<tr><td colspan='3'>No attempts.</td></tr>"}</tbody></table></div></div></div>
- <div class="card" style="margin-top:20px"><h2>User accounts</h2><p class="muted">Administrators can promote students to the next class when a new school session begins.</p><div class="table-wrap"><table class="data-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Class</th><th>Action</th></tr></thead><tbody>${(profiles||[]).map(p=>`<tr><td>${esc(p.first_name+" "+p.last_name)}</td><td>${esc(p.email||"")}</td><td><span class="badge">${esc(p.role)}</span></td><td>${esc(p.class||"—")}</td><td>${p.role==="student"?`<button class="btn btn-soft" onclick="changeStudentClass('${p.id}')">Change class</button>`:"—"}</td></tr>`).join("")}</tbody></table></div></div>`;
+ <div class="card" style="margin-top:20px"><h2>User accounts</h2><p class="muted">Promote students when a new session begins, or remove departing students and teachers by disabling their LMS access. Historical results and records are preserved.</p><div class="table-wrap"><table class="data-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Class</th><th>Account status</th><th>Actions</th></tr></thead><tbody>${(profiles||[]).map(p=>`<tr><td>${esc(p.first_name+" "+p.last_name)}</td><td>${esc(p.email||"")}</td><td><span class="badge">${esc(p.role)}</span></td><td>${esc(p.class||"—")}</td><td><span class="badge ${p.is_active===false?"red":"green"}">${p.is_active===false?"Removed / inactive":"Active"}</span></td><td style="display:flex;gap:6px;flex-wrap:wrap">${p.role==="student"?`<button class="btn btn-soft" onclick="changeStudentClass('${p.id}')">Change class</button>`:""}${["student","teacher"].includes(p.role)&&p.id!==currentUser.id?`<button class="btn ${p.is_active===false?"btn-primary":"btn-soft"}" onclick="setLmsAccountStatus('${p.id}',${p.is_active===false?"true":"false"})">${p.is_active===false?"Restore access":"Remove from LMS"}</button>`:""}</td></tr>`).join("")||"<tr><td colspan='6'>No user accounts found.</td></tr>"}</tbody></table></div></div>`;
+}
+
+async function setLmsAccountStatus(userId, shouldActivate){
+ if(profile?.role!=="admin")return toast("Administrator access required.",true);
+ if(userId===currentUser?.id)return toast("You cannot remove or disable your own current account.",true);
+ const {data:user,error}=await sb.from("profiles").select("id,first_name,last_name,email,role,is_active").eq("id",userId).maybeSingle();
+ if(error||!user)return toast(error?.message||"User account not found.",true);
+ if(!["student","teacher"].includes(user.role))return toast("Only student and teacher accounts can be removed from the LMS here.",true);
+ const activate=shouldActivate===true;
+ const verb=activate?"restore access for":"remove from the LMS";
+ const explanation=activate?"They will be able to sign in again.":"Their LMS access will be disabled. Their profile, exam results, comments, lessons and other historical records will be retained.";
+ if(!confirm(`Are you sure you want to ${verb} ${user.first_name} ${user.last_name} (${user.email||"no email"})?\n\n${explanation}`))return;
+ const {data:updated,error:updateError}=await sb.from("profiles").update({is_active:activate}).eq("id",user.id).in("role",["student","teacher"]).select("id,is_active").maybeSingle();
+ if(updateError)return toast(updateError.message,true);
+ if(!updated)return toast("The account status was not changed. Check administrator permissions and try again.",true);
+ toast(activate?"LMS access restored.":"Account removed from active LMS use. Historical records were preserved.");
+ await adminPanel();
 }
 
 async function changeStudentClass(studentId){
