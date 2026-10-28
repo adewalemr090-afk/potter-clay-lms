@@ -498,7 +498,7 @@ async function teacherStudio(){
   lessons=(allLessons||[]).filter(l=>(as||[]).some(a=>a.subject_id===l.subject_id&&(!a.class||a.class===l.subjects?.class)));
  }
  $("content").innerHTML=`<div class="page-head"><div><h1>Teacher Studio</h1><p>Publish lessons, create objective/theory examinations and mark physical theory answer booklets.</p></div><button class="btn btn-primary" onclick="newLesson()">+ New lesson</button></div>
- <div class="grid grid-2"><div class="card"><h2>My lessons</h2><div class="lesson-list">${(lessons||[]).map(l=>`<div class="lesson-row"><div><h3>${esc(l.title)}</h3><p>${esc(l.subjects?.class||"")} · ${esc(l.subjects?.name||"")}</p></div><div style="display:flex;gap:6px;flex-wrap:wrap"><span class="badge ${l.published?"green":""}">${l.published?"Published":"Draft"}</span><button class="btn btn-soft" onclick="openLesson('${l.id}')">Discussion</button></div></div>`).join("")||'<div class="empty">No lessons yet.</div>'}</div></div><div class="card"><h2>Classroom tools</h2><p class="muted">Moderate comments, mute students for a subject, initiate conversations, and publish audio lectures for your assigned subjects.</p><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary" onclick="teacherClassroom()">Classroom chat & moderation</button><button class="btn btn-soft" onclick="navigate('messages')">Messages</button><button class="btn btn-soft" onclick="manageTheoryQuestions()">+ Theory questions</button><button class="btn btn-soft" onclick="teacherResults()">Results & marking</button><button class="btn btn-soft" onclick="newAssignment()">+ Assignment</button></div></div></div>`;
+ <div class="grid grid-2"><div class="card"><h2>My lessons</h2><div class="lesson-list">${(lessons||[]).map(l=>`<div class="lesson-row"><div><h3>${esc(l.title)}</h3><p>${esc(l.subjects?.class||"")} · ${esc(l.subjects?.name||"")}</p></div><div style="display:flex;gap:6px;flex-wrap:wrap"><span class="badge ${l.published?"green":""}">${l.published?"Published":"Draft"}</span><button class="btn btn-soft" onclick="openLesson('${l.id}')">Discussion</button></div></div>`).join("")||'<div class="empty">No lessons yet.</div>'}</div></div><div class="card"><h2>Classroom tools</h2><p class="muted">Moderate comments, mute students for a subject, initiate conversations, and publish audio lectures for your assigned subjects.</p><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary" onclick="teacherClassroom()">Classroom chat & moderation</button><button class="btn btn-soft" onclick="navigate('messages')">Messages</button><button class="btn btn-soft" onclick="submitExamForApproval()">Submit CBT for approval</button><button class="btn btn-soft" onclick="manageTheoryQuestions()">+ Theory questions</button><button class="btn btn-soft" onclick="teacherResults()">Results & marking</button><button class="btn btn-soft" onclick="newAssignment()">+ Assignment</button></div></div></div>`;
 }
 async function manageTheoryQuestions(){
  if(!["teacher","admin"].includes(profile.role))return toast("Teacher or administrator access required.",true);
@@ -740,6 +740,67 @@ async function adminDeleteMessage(id){
  toast("Message deleted.");await adminOversightPage();
 }
 
+async function submitExamForApproval(){
+ if(profile.role!=="teacher")return toast("Teacher account required.",true);
+ const {data:assignments,error:ae}=await sb.from("teacher_subject_assignments").select("subject_id,class,subjects(name,class)").eq("teacher_id",currentUser.id);
+ if(ae)return toast(ae.message,true);
+ const options=(assignments||[]).filter(a=>a.subject_id&&a.class);
+ if(!options.length)return toast("You need an assigned subject and class before submitting an exam.",true);
+ showModal(`<h2>Submit CBT exam for admin approval</h2><p class="muted">Only choose a subject and class assigned to you. The exam will not be available to students until an administrator approves it.</p><form id="examSubmissionForm" class="field">
+ <label>Assigned class and subject<select id="esSubject" required>${options.map(a=>`<option value="${a.subject_id}" data-class="${esc(a.class)}">${esc(a.class)} · ${esc(a.subjects?.name||"Subject")}</option>`).join("")}</select></label>
+ <label>Exam / question bank name<input id="esName" value="Class Test" maxlength="120" required></label>
+ <label>Exam standard<input id="esStandard" value="School Standard" maxlength="100" required></label>
+ <div class="two-col"><label>Duration (minutes)<input id="esDuration" type="number" min="1" max="300" value="60" required></label><label>Expected question count<input id="esCount" type="number" min="1" max="300" value="20" required></label></div>
+ <label>Objective questions as CSV<textarea id="esCsv" rows="10" required placeholder="question_text,option_a,option_b,option_c,option_d,correct_option,explanation,marks&#10;What is 2+2?,3,4,5,6,B,Addition,1"></textarea></label>
+ <p class="muted" style="font-size:12px">CSV headers are required: question_text, option_a, option_b, option_c, option_d, correct_option. Optional: explanation, marks. Use A, B, C or D for correct_option. For commas inside a field, enclose the field in double quotes.</p>
+ <button class="btn btn-primary" type="submit">Submit to administrator</button></form>`);
+ $("examSubmissionForm").onsubmit=async e=>{
+  e.preventDefault();
+  try{
+   const rows=parseCSV($("esCsv").value);
+   if(!rows.length)throw new Error("Paste at least one question in CSV format.");
+   const required=["question_text","option_a","option_b","option_c","option_d","correct_option"];
+   const missing=required.filter(k=>!(k in rows[0]));if(missing.length)throw new Error("Missing CSV column(s): "+missing.join(", "));
+   const questions=rows.map((r,i)=>({question_text:String(r.question_text||"").trim(),option_a:String(r.option_a||"").trim(),option_b:String(r.option_b||"").trim(),option_c:String(r.option_c||"").trim(),option_d:String(r.option_d||"").trim(),correct_option:String(r.correct_option||"").trim().toUpperCase(),explanation:String(r.explanation||"").trim(),marks:Number(r.marks||1)}));
+   const valid=[];questions.forEach((q,i)=>{if(!q.question_text||!q.option_a||!q.option_b||!q.option_c||!q.option_d)valid.push(`Question ${i+1}: question and all four options are required.`);if(!["A","B","C","D"].includes(q.correct_option))valid.push(`Question ${i+1}: correct_option must be A, B, C or D.`);if(!Number.isFinite(q.marks)||q.marks<=0)valid.push(`Question ${i+1}: marks must be greater than zero.`)});
+   if(valid.length)throw new Error(valid.slice(0,10).join("\n"));
+   const subjectId=$("esSubject").value,assignment=options.find(a=>a.subject_id===subjectId),payload={teacher_id:currentUser.id,subject_id:subjectId,class:assignment.class,bank_name:$("esName").value.trim(),exam_standard:$("esStandard").value.trim(),duration_minutes:Number($("esDuration").value),question_count:questions.length,questions,status:"pending"};
+   if(payload.duration_minutes<1||payload.duration_minutes>300)throw new Error("Duration must be between 1 and 300 minutes.");
+   const {error}=await sb.from("teacher_exam_submissions").insert(payload);if(error)throw error;
+   closeModal();toast("Exam submitted. It will be available for CBT code generation only after admin approval.");teacherStudio();
+  }catch(err){toast(err.message||"Could not submit exam.",true)}
+ };
+}
+async function reviewExamSubmissions(){
+ if(profile.role!=="admin")return toast("Administrator access required.",true);
+ const {data:rawSubs,error}=await sb.from("teacher_exam_submissions").select("*,subjects(name)").order("created_at",{ascending:false});
+ if(error)return toast("Could not load submissions: "+error.message,true);
+ const teacherIds=[...new Set((rawSubs||[]).map(x=>x.teacher_id))];const {data:teacherProfiles}=teacherIds.length?await sb.from("profiles").select("id,first_name,last_name,email").in("id",teacherIds):{data:[]};const profileById=new Map((teacherProfiles||[]).map(p=>[p.id,p]));const subs=(rawSubs||[]).map(x=>({...x,profiles:profileById.get(x.teacher_id)}));
+ showModal(`<h2>Teacher exam submissions</h2><p class="muted">Review each submitted exam. Approval creates the question bank and imports its questions; only then can CBT codes be generated.</p><div class="table-wrap"><table class="data-table"><thead><tr><th>Exam</th><th>Teacher</th><th>Class / subject</th><th>Questions</th><th>Status</th><th>Action</th></tr></thead><tbody>${(subs||[]).map(x=>`<tr><td>${esc(x.bank_name)}<br><small>${esc(x.exam_standard||"")} · ${Number(x.duration_minutes||60)} min</small></td><td>${esc(((x.profiles?.first_name||"")+" "+(x.profiles?.last_name||"")).trim()||x.profiles?.email||"Teacher")}</td><td>${esc(x.class)} · ${esc(x.subjects?.name||"")}</td><td>${Array.isArray(x.questions)?x.questions.length:Number(x.question_count||0)}</td><td>${esc(x.status)}${x.admin_notes?`<br><small>${esc(x.admin_notes)}</small>`:""}</td><td><button class="btn btn-soft" onclick="previewExamSubmission('${x.id}')">Review</button>${x.status==="pending"?` <button class="btn btn-primary" onclick="approveExamSubmission('${x.id}')">Approve</button> <button class="btn btn-soft" onclick="rejectExamSubmission('${x.id}')">Reject</button>`:""}</td></tr>`).join("")||'<tr><td colspan="6">No teacher submissions yet.</td></tr>'}</tbody></table></div>`);
+}
+async function previewExamSubmission(id){
+ if(profile.role!=="admin")return toast("Administrator access required.",true);
+ const {data:x,error}=await sb.from("teacher_exam_submissions").select("*,subjects(name)").eq("id",id).single();if(error)return toast(error.message,true);
+ const qs=Array.isArray(x.questions)?x.questions:[];
+ showModal(`<h2>Review: ${esc(x.bank_name)}</h2><p><b>Class:</b> ${esc(x.class)} · <b>Subject:</b> ${esc(x.subjects?.name||"")}</p><p><b>Duration:</b> ${Number(x.duration_minutes)} minutes · <b>Questions:</b> ${qs.length}</p><div style="max-height:48vh;overflow:auto">${qs.map((q,i)=>`<div class="card" style="margin:8px 0"><b>${i+1}. ${esc(q.question_text)}</b><ol type="A"><li>${esc(q.option_a)}</li><li>${esc(q.option_b)}</li><li>${esc(q.option_c)}</li><li>${esc(q.option_d)}</li></ol><p class="muted">Correct answer: ${esc(q.correct_option)} · Marks: ${Number(q.marks||1)}</p>${q.explanation?`<p>${esc(q.explanation)}</p>`:""}</div>`).join("")}</div><div style="display:flex;gap:8px;margin-top:12px"><button class="btn btn-primary" onclick="approveExamSubmission('${x.id}')">Approve exam</button><button class="btn btn-soft" onclick="rejectExamSubmission('${x.id}')">Reject</button></div>`);
+}
+async function approveExamSubmission(id){
+ if(profile.role!=="admin")return toast("Administrator access required.",true);
+ const {data:x,error:xe}=await sb.from("teacher_exam_submissions").select("*").eq("id",id).eq("status","pending").single();if(xe||!x)return toast(xe?.message||"This submission is no longer pending.",true);
+ const qs=Array.isArray(x.questions)?x.questions:[];if(!qs.length)return toast("This submission contains no questions.",true);
+ const {data:existing,error:ee}=await sb.from("question_banks").select("id").eq("subject_id",x.subject_id).eq("class",x.class).ilike("name",x.bank_name).maybeSingle();if(ee)return toast(ee.message,true);if(existing)return toast("A question bank with this name already exists for this class and subject. Rename the submission before approving.",true);
+ const {data:bank,error:be}=await sb.from("question_banks").insert({subject_id:x.subject_id,class:x.class,name:x.bank_name,exam_standard:x.exam_standard||"School Standard",duration_minutes:Number(x.duration_minutes||60),question_count:qs.length,active:true,approval_status:"approved",submitted_by:x.teacher_id,approved_by:currentUser.id,approved_at:new Date().toISOString()}).select().single();if(be)return toast("Could not create approved question bank: "+be.message,true);
+ const payload=qs.map(q=>({bank_id:bank.id,question_text:q.question_text,option_a:q.option_a,option_b:q.option_b,option_c:q.option_c,option_d:q.option_d,correct_option:q.correct_option,explanation:q.explanation||"",marks:Number(q.marks||1)}));
+ const {error:qe}=await sb.from("questions").insert(payload);if(qe){await sb.from("question_banks").delete().eq("id",bank.id);return toast("Questions could not be imported; approval was cancelled: "+qe.message,true)}
+ const {error:ue}=await sb.from("teacher_exam_submissions").update({status:"approved",bank_id:bank.id,approved_by:currentUser.id,approved_at:new Date().toISOString(),admin_notes:"Approved"}).eq("id",id);if(ue)return toast("Exam was created but submission status update failed: "+ue.message,true);
+ toast("Exam approved. The question bank is ready for CBT code generation.");reviewExamSubmissions();
+}
+async function rejectExamSubmission(id){
+ if(profile.role!=="admin")return toast("Administrator access required.",true);
+ const reason=prompt("Reason for rejection (the teacher can see this note):","Please review and correct the questions.");if(reason===null)return;
+ const {error}=await sb.from("teacher_exam_submissions").update({status:"rejected",admin_notes:reason,approved_by:currentUser.id,approved_at:new Date().toISOString()}).eq("id",id).eq("status","pending");if(error)return toast(error.message,true);toast("Submission rejected with feedback.");reviewExamSubmissions();
+}
+
 async function adminPanel(){
  if(profile.role!=="admin")return navigate("dashboard");
  const [{data:profiles},{data:codes},{data:attempts},{data:academic}]=await Promise.all([
@@ -748,7 +809,7 @@ async function adminPanel(){
   sb.from("exam_attempts").select("*,question_banks(name),profiles(first_name,last_name,class)").order("submitted_at",{ascending:false}).limit(50),
   sb.from("academic_settings").select("academic_session,updated_at").eq("id",1).maybeSingle()
  ]);
- $("content").innerHTML=`<div class="page-head"><div><h1>Admin Control</h1><p>School-wide LMS management.</p></div><div style="display:flex;gap:8px"><button class="btn btn-soft" onclick="generateCode()">+ Generate CBT code</button><button class="btn btn-soft" onclick="generateBulkCodes()">Bulk codes</button><button class="btn btn-soft" onclick="manageAccounts()">Manage accounts</button><button class="btn btn-soft" onclick="manageTeacherAssignments()">Teacher assignments</button><button class="btn btn-soft" onclick="navigate('admin-oversight')">Lessons & Chats</button><button class="btn btn-soft" onclick="addQuestion()">+ Add question</button><button class="btn btn-soft" onclick="bulkImportQuestions()">⇧ Import CSV</button><button class="btn btn-primary" onclick="manageQuestionBank()">+ Question bank</button></div></div>
+ $("content").innerHTML=`<div class="page-head"><div><h1>Admin Control</h1><p>School-wide LMS management.</p></div><div style="display:flex;gap:8px"><button class="btn btn-soft" onclick="generateCode()">+ Generate CBT code</button><button class="btn btn-soft" onclick="generateBulkCodes()">Bulk codes</button><button class="btn btn-soft" onclick="manageAccounts()">Manage accounts</button><button class="btn btn-soft" onclick="manageTeacherAssignments()">Teacher assignments</button><button class="btn btn-soft" onclick="reviewExamSubmissions()">Review exam submissions</button><button class="btn btn-soft" onclick="navigate('admin-oversight')">Lessons & Chats</button><button class="btn btn-soft" onclick="addQuestion()">+ Add question</button><button class="btn btn-soft" onclick="bulkImportQuestions()">⇧ Import CSV</button><button class="btn btn-primary" onclick="manageQuestionBank()">+ Question bank</button></div></div>
  <div class="card" style="margin-top:20px;border-left:5px solid #8f1827">
  <div class="page-head"><div><h2>📢 General Announcements</h2><p>Announcements appear on every user's dashboard and scroll continuously until you stop or change them.</p></div></div>
  <textarea id="announcementText" rows="3" style="width:100%;padding:12px;border:1px solid #ddd;border-radius:10px" placeholder="Type the announcement everyone should see..."></textarea>
@@ -832,8 +893,8 @@ async function manageAccounts(){
 }
 async function generateBulkCodes(){
  if(profile.role!=="admin")return toast("Administrator access required.",true);
- const {data:banks,error}=await sb.from("question_banks").select("*,subjects(name,class)").eq("active",true).order("created_at",{ascending:false});
- if(error)return toast(error.message,true);if(!banks?.length)return toast("Create an active question bank first.",true);
+ const {data:banks,error}=await sb.from("question_banks").select("*,subjects(name,class)").eq("active",true).eq("approval_status","approved").order("created_at",{ascending:false});
+ if(error)return toast(error.message,true);if(!banks?.length)return toast("No approved active question banks are available yet.",true);
  showModal(`<h2>Generate bulk CBT access codes</h2><form id="bulkCodeForm" class="field"><label>Question bank<select id="bulkCodeBank">${banks.map(b=>`<option value="${b.id}">${esc(b.class)} · ${esc(b.subjects?.name)} · ${esc(b.name)}</option>`).join("")}</select></label><label>Number of codes (1–200)<input id="bulkCodeCount" type="number" min="1" max="200" value="20" required></label><label>Expiry (optional)<input id="bulkCodeExpiry" type="datetime-local"></label><button class="btn btn-primary" type="submit">Generate codes</button></form>`);
  $("bulkCodeForm").onsubmit=async e=>{e.preventDefault();const count=Math.max(1,Math.min(200,Number($("bulkCodeCount").value)||1)),bankId=$("bulkCodeBank").value,expiry=$("bulkCodeExpiry").value?new Date($("bulkCodeExpiry").value).toISOString():null,codes=[];
  for(let i=0;i<count;i++){const code=("PCS-"+crypto.randomUUID().replaceAll("-","").slice(0,8)).toUpperCase();const {error:ie}=await sb.from("cbt_codes").insert({code,bank_id:bankId,student_id:null,expires_at:expiry,created_by:currentUser.id});if(ie)return toast("Stopped after "+codes.length+" code(s): "+ie.message,true);codes.push(code)}
@@ -841,8 +902,8 @@ async function generateBulkCodes(){
  };
 }
 async function generateCode(){
- const {data:banks}=await sb.from("question_banks").select("*,subjects(name,class)").eq("active",true).order("created_at",{ascending:false});
- if(!banks?.length)return toast("Create a question bank first.",true);
+ const {data:banks}=await sb.from("question_banks").select("*,subjects(name,class)").eq("active",true).eq("approval_status","approved").order("created_at",{ascending:false});
+ if(!banks?.length)return toast("No approved active question banks are available yet.",true);
  showModal(`<h2>Generate CBT access code</h2><form id="codeForm" class="field"><label>Question bank<select id="cb">${banks.map(b=>`<option value="${b.id}">${esc(b.subjects?.class)} · ${esc(b.subjects?.name)} · ${esc(b.name)}</option>`).join("")}</select></label><label>Student email (optional)<input id="ce" type="email" placeholder="Leave blank for unassigned code"></label><label>Expiry<input id="cx" type="datetime-local"></label><button class="btn btn-primary" type="submit">Generate code</button></form>`);
  $("codeForm").onsubmit=async e=>{e.preventDefault();let student_id=null;const email=$("ce").value.trim();if(email){const {data:p}=await sb.from("profiles").select("id").eq("email",email).single();if(!p)return toast("No student found with that email.",true);student_id=p.id}
  const code=("PCS-"+crypto.randomUUID().replaceAll("-","").slice(0,8)).toUpperCase();
