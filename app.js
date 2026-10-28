@@ -92,7 +92,8 @@ function navItems(){
    ["admin","⚙","Admin Control"],
    ["admin-students","🎓","Students"],
    ["admin-teachers","👩‍🏫","Teachers"],
-   ["admin-admins","🛡","Admins"]
+   ["admin-admins","🛡","Admins"],
+   ["admin-oversight","🗂","Lessons & Chats"]
   );
  }
  return base;
@@ -122,7 +123,7 @@ sb.auth.onAuthStateChange((_event,session)=>{if(session&&!currentUser)boot()});
 
 async function renderPage(page){
  $("content").innerHTML=`<div class="empty">Loading...</div>`;
- const titles={dashboard:["Dashboard","Your learning space"],courses:["My Courses","Explore your class subjects and lessons"],cbt:["CBT Centre","Practice and take secure computer-based tests"],teacher:["Teacher Studio","Create lessons, audio lectures and assignments"],admin:["Admin Control","Manage learners, teachers, CBT and school activity"],"admin-students":["Students","Manage student accounts and classes"],"admin-teachers":["Teachers","Manage teacher accounts and assignments"],"admin-admins":["Admins","Review administrator accounts"],profile:["My Profile","Manage your account and profile picture"],messages:["Messages","Conversations with teachers and students"]};
+ const titles={dashboard:["Dashboard","Your learning space"],courses:["My Courses","Explore your class subjects and lessons"],cbt:["CBT Centre","Practice and take secure computer-based tests"],teacher:["Teacher Studio","Create lessons, audio lectures and assignments"],admin:["Admin Control","Manage learners, teachers, CBT and school activity"],"admin-students":["Students","Manage student accounts and classes"],"admin-teachers":["Teachers","Manage teacher accounts and assignments"],"admin-admins":["Admins","Review administrator accounts"], "admin-oversight":["Lessons & Chats","Review lessons, uploaded files and class conversations"],profile:["My Profile","Manage your account and profile picture"],messages:["Messages","Conversations with teachers and students"]};
  $("pageTitle").textContent=titles[page]?.[0]||"Dashboard";$("pageSub").textContent=(titles[page]?.[1]||"")+" · "+formatLmsDateTime();
  try{
   if(page==="dashboard")await dashboard();
@@ -133,6 +134,7 @@ async function renderPage(page){
   if(page==="admin-students")await adminPeoplePage("student");
   if(page==="admin-teachers")await adminPeoplePage("teacher");
   if(page==="admin-admins")await adminPeoplePage("admin");
+  if(page==="admin-oversight")await adminOversightPage();
   if(page==="profile")await profilePage();
   if(page==="messages")await messagesPage();
  }catch(e){$("content").innerHTML=`<div class="card"><strong>Something went wrong.</strong><p class="muted">${esc(e.message)}</p></div>`}
@@ -661,6 +663,69 @@ async function adminToggleActive(id,currentActive){
  await adminPeoplePage(page);
 }
 
+
+async function adminOversightPage(){
+ if(profile?.role!=="admin")return navigate("dashboard");
+ const [{data:lessons,error:le},{data:comments,error:ce},{data:messages,error:me}] = await Promise.all([
+  sb.from("lessons").select("id,title,subject_id,teacher_id,notes_url,audio_url,published,created_at,subjects(name,class)").order("created_at",{ascending:false}).limit(500),
+  sb.from("comments").select("id,body,user_id,lesson_id,parent_comment_id,created_at,lessons(title,subject_id,subjects(name,class))").order("created_at",{ascending:false}).limit(500),
+  sb.from("direct_messages").select("id,subject_id,sender_id,recipient_id,body,created_at").order("created_at",{ascending:false}).limit(500)
+ ]);
+ if(le||ce||me){
+  $("content").innerHTML=`<div class="card"><h2>Admin oversight access unavailable</h2><p>${esc(le?.message||ce?.message||me?.message||"Access denied")}</p><p class="muted">Run the admin oversight SQL migration, then reload this page.</p></div>`;
+  return;
+ }
+ const [{data:profiles},{data:subjects}] = await Promise.all([
+  sb.from("profiles").select("id,first_name,last_name,role").limit(1000),
+  sb.from("subjects").select("id,name,class").limit(500)
+ ]);
+ const names={};(profiles||[]).forEach(p=>names[p.id]=`${p.first_name||""} ${p.last_name||""}`.trim()||"LMS member");
+ const subMap={};(subjects||[]).forEach(s=>subMap[s.id]=s);
+ const lessonsHtml=(lessons||[]).map(l=>`<div class="lesson-row"><div style="flex:1"><strong>${esc(l.title)}</strong><p>${esc(l.subjects?.class||subMap[l.subject_id]?.class||"")} · ${esc(l.subjects?.name||subMap[l.subject_id]?.name||"Subject")} · Uploaded by ${esc(names[l.teacher_id]||"Unknown teacher")}</p><p class="muted">${l.created_at?new Date(l.created_at).toLocaleString():""} · ${l.published?"Published":"Draft"}</p><div style="display:flex;gap:8px;flex-wrap:wrap">${l.notes_url?`<a class="btn btn-soft" href="${esc(l.notes_url)}" target="_blank" rel="noopener">Open notes/file</a>`:""}${l.audio_url?`<audio controls src="${esc(l.audio_url)}" style="max-width:220px"></audio>`:""}</div></div><button class="btn btn-soft" onclick="adminDeleteLesson('${l.id}')">Delete lesson & files</button></div>`).join("")||'<div class="empty">No lessons found.</div>';
+ const commentsHtml=(comments||[]).map(c=>`<div class="lesson-row"><div style="flex:1"><strong>${esc(names[c.user_id]||"LMS member")}</strong><p>${esc(c.lessons?.subjects?.class||subMap[c.lessons?.subject_id]?.class||"")} · ${esc(c.lessons?.subjects?.name||subMap[c.lessons?.subject_id]?.name||"Subject")} · ${esc(c.lessons?.title||"Lesson discussion")}</p><p style="white-space:pre-wrap">${esc(c.body)}</p><small class="muted">${c.created_at?new Date(c.created_at).toLocaleString():""}</small></div><button class="btn btn-soft" onclick="adminDeleteComment('${c.id}')">Delete comment</button></div>`).join("")||'<div class="empty">No lesson comments found.</div>';
+ const messagesHtml=(messages||[]).map(m=>`<div class="lesson-row"><div style="flex:1"><strong>${esc(names[m.sender_id]||"Unknown sender")} → ${esc(names[m.recipient_id]||"Unknown recipient")}</strong><p>${esc(subMap[m.subject_id]?.class||"")} · ${esc(subMap[m.subject_id]?.name||"Subject")} · ${m.created_at?new Date(m.created_at).toLocaleString():""}</p><p style="white-space:pre-wrap">${esc(m.body)}</p></div><button class="btn btn-soft" onclick="adminDeleteMessage('${m.id}')">Delete message</button></div>`).join("")||'<div class="empty">No direct messages found.</div>';
+ $("content").innerHTML=`<div class="page-head"><div><h1>Lessons & Chats</h1><p>Administrator oversight of lessons, uploaded resources, comments and direct conversations.</p></div><button class="btn btn-soft" onclick="navigate('admin')">← Admin Control</button></div>
+ <div class="card"><h2>Uploaded lessons and files (${(lessons||[]).length})</h2><div class="lesson-list">${lessonsHtml}</div></div>
+ <div class="card" style="margin-top:18px"><h2>Class discussion comments (${(comments||[]).length})</h2><p class="muted">Review and remove inappropriate comments across lessons.</p><div class="lesson-list">${commentsHtml}</div></div>
+ <div class="card" style="margin-top:18px"><h2>Direct conversations (${(messages||[]).length} messages)</h2><p class="muted">Messages are visible to administrators for safeguarding and moderation.</p><div class="lesson-list">${messagesHtml}</div></div>`;
+}
+async function adminDeleteLesson(id){
+ if(profile?.role!=="admin")return toast("Administrator access required.",true);
+ if(!confirm("Delete this lesson and its linked notes/audio files where the file URLs can be resolved? This cannot be undone."))return;
+ const {data:l,error}=await sb.from("lessons").select("id,notes_url,audio_url").eq("id",id).single();
+ if(error)return toast(error.message,true);
+ const storageItems=[];
+ for(const url of [l.notes_url,l.audio_url].filter(Boolean)){
+  try{
+   const u=new URL(url);
+   const marker="/storage/v1/object/public/";
+   const pos=u.pathname.indexOf(marker);
+   if(pos>=0){const rest=u.pathname.slice(pos+marker.length);const slash=rest.indexOf("/");if(slash>0)storageItems.push({bucket:decodeURIComponent(rest.slice(0,slash)),path:decodeURIComponent(rest.slice(slash+1))});}
+  }catch(e){}
+ }
+ for(const item of storageItems){const {error:se}=await sb.storage.from(item.bucket).remove([item.path]);if(se)console.warn("Could not remove storage object",item.bucket,item.path,se.message);}
+ const {error:ce}=await sb.from("comments").delete().eq("lesson_id",id);
+ if(ce)return toast("Could not delete lesson comments: "+ce.message,true);
+ const {error:de}=await sb.from("lessons").delete().eq("id",id);
+ if(de)return toast("Lesson record could not be deleted: "+de.message,true);
+ toast("Lesson deleted. Check Storage for any files that could not be removed.");
+ await adminOversightPage();
+}
+async function adminDeleteComment(id){
+ if(profile?.role!=="admin")return toast("Administrator access required.",true);
+ if(!confirm("Delete this comment?"))return;
+ const {error}=await sb.from("comments").delete().eq("id",id);
+ if(error)return toast(error.message,true);
+ toast("Comment deleted.");await adminOversightPage();
+}
+async function adminDeleteMessage(id){
+ if(profile?.role!=="admin")return toast("Administrator access required.",true);
+ if(!confirm("Delete this direct message?"))return;
+ const {error}=await sb.from("direct_messages").delete().eq("id",id);
+ if(error)return toast(error.message,true);
+ toast("Message deleted.");await adminOversightPage();
+}
+
 async function adminPanel(){
  if(profile.role!=="admin")return navigate("dashboard");
  const [{data:profiles},{data:codes},{data:attempts},{data:academic}]=await Promise.all([
@@ -669,7 +734,7 @@ async function adminPanel(){
   sb.from("exam_attempts").select("*,question_banks(name),profiles(first_name,last_name,class)").order("submitted_at",{ascending:false}).limit(50),
   sb.from("academic_settings").select("academic_session,updated_at").eq("id",1).maybeSingle()
  ]);
- $("content").innerHTML=`<div class="page-head"><div><h1>Admin Control</h1><p>School-wide LMS management.</p></div><div style="display:flex;gap:8px"><button class="btn btn-soft" onclick="generateCode()">+ Generate CBT code</button><button class="btn btn-soft" onclick="generateBulkCodes()">Bulk codes</button><button class="btn btn-soft" onclick="manageAccounts()">Manage accounts</button><button class="btn btn-soft" onclick="manageTeacherAssignments()">Teacher assignments</button><button class="btn btn-soft" onclick="addQuestion()">+ Add question</button><button class="btn btn-soft" onclick="bulkImportQuestions()">⇧ Import CSV</button><button class="btn btn-primary" onclick="manageQuestionBank()">+ Question bank</button></div></div>
+ $("content").innerHTML=`<div class="page-head"><div><h1>Admin Control</h1><p>School-wide LMS management.</p></div><div style="display:flex;gap:8px"><button class="btn btn-soft" onclick="generateCode()">+ Generate CBT code</button><button class="btn btn-soft" onclick="generateBulkCodes()">Bulk codes</button><button class="btn btn-soft" onclick="manageAccounts()">Manage accounts</button><button class="btn btn-soft" onclick="manageTeacherAssignments()">Teacher assignments</button><button class="btn btn-soft" onclick="navigate('admin-oversight')">Lessons & Chats</button><button class="btn btn-soft" onclick="addQuestion()">+ Add question</button><button class="btn btn-soft" onclick="bulkImportQuestions()">⇧ Import CSV</button><button class="btn btn-primary" onclick="manageQuestionBank()">+ Question bank</button></div></div>
  <div class="card" style="margin-top:20px;border-left:5px solid #8f1827">
  <div class="page-head"><div><h2>📢 General Announcements</h2><p>Announcements appear on every user's dashboard and scroll continuously until you stop or change them.</p></div></div>
  <textarea id="announcementText" rows="3" style="width:100%;padding:12px;border:1px solid #ddd;border-radius:10px" placeholder="Type the announcement everyone should see..."></textarea>
