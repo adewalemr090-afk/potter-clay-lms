@@ -632,13 +632,27 @@ async function adminPeoplePage(role){
  const roleLabel=role==="student"?"Students":role==="teacher"?"Teachers":"Administrators";
  const {data:people,error}=await sb.from("profiles").select("*").eq("role",role).order("created_at",{ascending:false}).limit(500);
  if(error)throw error;
- const actionButtons=(p)=>`<button class="btn btn-soft" onclick="adminChangeClass('${p.id}')" ${role!=="student"?"disabled":""}>Change class</button>
- <button class="btn btn-soft" onclick="adminToggleActive('${p.id}',${p.is_active!==false})">${p.is_active===false?"Restore access":"Disable access"}</button>`;
+ const actionButtons=(p)=>`${role==="student"?`<button class="btn btn-soft" onclick="adminChangeClass('${p.id}')">Change class</button>`:""}${role!=="admin"?`<button class="btn btn-soft" onclick="adminToggleActive('${p.id}',${p.is_active!==false})">${p.is_active===false?"Restore access":"Disable access"}</button>`:""}`;
+ const addAdminForm=role==="admin"?`<div class="card" style="margin-top:18px"><h2>Add another administrator</h2><p>First, the person must create an account and sign in to the LMS at least once. Enter the email address used for that account to grant administrator access.</p><div style="display:flex;gap:8px;flex-wrap:wrap"><input id="newAdminEmail" type="email" placeholder="person@example.com" style="padding:11px;border:1px solid #ddd;border-radius:8px;min-width:260px;flex:1"><button class="btn btn-primary" onclick="grantAdminByEmail()">Grant admin access</button></div><p class="muted">Only grant this role to a trusted person. Administrators can manage school-wide data and accounts.</p></div>`:"";
  $("content").innerHTML=`<div class="page-head"><div><h1>${roleLabel}</h1><p>Manage ${roleLabel.toLowerCase()} separately from other account types.</p></div><button class="btn btn-soft" onclick="navigate('admin')">← Admin Control</button></div>
- <div class="card stat"><strong>${people?.length||0}</strong><span>${roleLabel} accounts</span></div>
- <div class="card" style="margin-top:18px"><div class="table-wrap"><table class="data-table"><thead><tr><th>Name</th><th>Email</th>${role==="student"?"<th>Class</th>":""}<th>Status</th><th>Actions</th></tr></thead><tbody>
- ${(people||[]).map(p=>`<tr><td>${esc([p.first_name,p.last_name].filter(Boolean).join(" ")||"Unnamed user")}</td><td>${esc(p.email||"")}</td>${role==="student"?`<td>${esc(p.class||"Not assigned")}</td>`:""}<td><span class="badge ${p.is_active===false?"red":"green"}">${p.is_active===false?"Inactive":"Active"}</span></td><td><div style="display:flex;gap:6px;flex-wrap:wrap">${actionButtons(p)}</div></td></tr>`).join("")||`<tr><td colspan="${role==="student"?5:4}">No ${roleLabel.toLowerCase()} found.</td></tr>`}
+ <div class="card stat"><strong>${people?.length||0}</strong><span>${roleLabel} accounts</span></div>${addAdminForm}
+ <div class="card" style="margin-top:18px"><div class="table-wrap"><table class="data-table"><thead><tr><th>Name</th><th>Email</th>${role==="student"?"<th>Class</th>":""}<th>Status</th>${role==="admin"?"":"<th>Actions</th>"}</tr></thead><tbody>
+ ${(people||[]).map(p=>`<tr><td>${esc([p.first_name,p.last_name].filter(Boolean).join(" ")||"Unnamed user")}</td><td>${esc(p.email||"")}</td>${role==="student"?`<td>${esc(p.class||"Not assigned")}</td>`:""}<td><span class="badge ${p.is_active===false?"red":"green"}">${p.is_active===false?"Inactive":"Active"}</span></td>${role==="admin"?"":`<td><div style="display:flex;gap:6px;flex-wrap:wrap">${actionButtons(p)}</div></td>`}</tr>`).join("")||`<tr><td colspan="${role==="student"?5:role==="admin"?3:4}">No ${roleLabel.toLowerCase()} found.</td></tr>`}
  </tbody></table></div></div>`;
+}
+async function grantAdminByEmail(){
+ if(profile?.role!=="admin")return toast("Only an administrator can grant administrator access.",true);
+ const input=$("newAdminEmail");const email=(input?.value||"").trim().toLowerCase();
+ if(!email||!email.includes("@"))return toast("Enter the email address of an existing LMS account.",true);
+ if(!confirm(`Grant full administrator access to ${email}? This gives the account school-wide management permissions.`))return;
+ const {data:user,error:findError}=await sb.from("profiles").select("id,email,first_name,last_name,role").ilike("email",email).maybeSingle();
+ if(findError)return toast("Could not find account: "+findError.message,true);
+ if(!user)return toast("No LMS profile found for that email. Ask the person to sign up and sign in once, then try again.",true);
+ if(user.role==="admin")return toast("This account is already an administrator.");
+ const {error}=await sb.from("profiles").update({role:"admin"}).eq("id",user.id);
+ if(error)return toast("Unable to grant admin access: "+error.message,true);
+ toast(`Administrator access granted to ${user.email||email}.`);
+ await adminPeoplePage("admin");
 }
 async function adminChangeClass(id){
  if(profile?.role!=="admin")return toast("Only administrators can change a student's class.",true);
