@@ -874,9 +874,24 @@ async function manageTeacherAssignments(){
  if(profile.role!=="admin")return toast("Administrator access required.",true);
  const [{data:teachers,error:te},{data:subjects,error:se},{data:assignments,error:ae}]=await Promise.all([sb.from("profiles").select("id,first_name,last_name,email").eq("role","teacher").order("first_name"),sb.from("subjects").select("id,name,class").order("class").order("name"),sb.from("teacher_subject_assignments").select("id,teacher_id,subject_id,class,profiles(first_name,last_name),subjects(name)").order("created_at",{ascending:false})]);
  if(te||se||ae)return toast(te?.message||se?.message||ae?.message,true);if(!teachers?.length)return toast("Create a teacher account before assigning subjects.",true);if(!subjects?.length)return toast("Create subjects before assigning teachers.",true);
- showModal(`<h2>Teacher subject assignments</h2><p class="muted">Assign a teacher to a subject. The class is taken from that subject's class.</p><form id="teacherAssignForm" class="field"><label>Teacher<select id="assignTeacher">${teachers.map(t=>`<option value="${t.id}">${esc(t.first_name+" "+t.last_name)} · ${esc(t.email||"")}</option>`).join("")}</select></label><label>Subject and class<select id="assignSubject">${subjects.map(x=>`<option value="${x.id}">${esc(x.class)} · ${esc(x.name)}</option>`).join("")}</select></label><button class="btn btn-primary" type="submit">Assign subject</button></form><h3 style="margin-top:24px">Current assignments</h3><div class="table-wrap"><table class="data-table"><thead><tr><th>Teacher</th><th>Class</th><th>Subject</th></tr></thead><tbody>${(assignments||[]).map(a=>`<tr><td>${esc((a.profiles?.first_name||"")+" "+(a.profiles?.last_name||""))}</td><td>${esc(a.class||"All assigned classes")}</td><td>${esc(a.subjects?.name||"")}</td></tr>`).join("")||'<tr><td colspan="3">No teacher assignments yet.</td></tr>'}</tbody></table></div>`);
+ showModal(`<h2>Teacher subject assignments</h2><p class="muted">Assign a teacher to a subject. The class is taken from that subject's class.</p><form id="teacherAssignForm" class="field"><label>Teacher<select id="assignTeacher">${teachers.map(t=>`<option value="${t.id}">${esc(t.first_name+" "+t.last_name)} · ${esc(t.email||"")}</option>`).join("")}</select></label><label>Subject and class<select id="assignSubject">${subjects.map(x=>`<option value="${x.id}">${esc(x.class)} · ${esc(x.name)}</option>`).join("")}</select></label><button class="btn btn-primary" type="submit">Assign subject</button></form><h3 style="margin-top:24px">Current assignments</h3><div class="table-wrap"><table class="data-table"><thead><tr><th>Teacher</th><th>Class</th><th>Subject</th><th>Action</th></tr></thead><tbody>${(assignments||[]).map(a=>`<tr><td>${esc((a.profiles?.first_name||"")+" "+(a.profiles?.last_name||""))}</td><td>${esc(a.class||"All assigned classes")}</td><td>${esc(a.subjects?.name||"")}</td><td><button class="btn btn-soft btn-sm" onclick="removeTeacherAssignment('${a.id}')">Remove</button></td></tr>`).join("")||'<tr><td colspan="4">No teacher assignments yet.</td></tr>'}</tbody></table></div>`);
  $("teacherAssignForm").onsubmit=async e=>{e.preventDefault();const teacherId=$("assignTeacher").value,subjectId=$("assignSubject").value,subject=subjects.find(x=>x.id===subjectId);if(!subject)return toast("Select a valid subject.",true);if((assignments||[]).some(a=>a.teacher_id===teacherId&&a.subject_id===subjectId))return toast("This teacher is already assigned to this subject.",true);const {error}=await sb.from("teacher_subject_assignments").insert({teacher_id:teacherId,subject_id:subjectId,class:subject.class});if(error)return toast(error.message,true);toast("Teacher assigned to "+subject.class+" "+subject.name+".");manageTeacherAssignments()};
 }
+async function removeTeacherAssignment(assignmentId){
+ if(profile.role!=="admin")return toast("Administrator access required.",true);
+ if(!assignmentId)return toast("Assignment record not found.",true);
+ const {data:a,error:lookupError}=await sb.from("teacher_subject_assignments").select("id,class,profiles(first_name,last_name),subjects(name)").eq("id",assignmentId).maybeSingle();
+ if(lookupError)return toast(lookupError.message,true);
+ if(!a)return toast("This assignment may already have been removed.",true);
+ const teacherName=((a.profiles?.first_name||"")+" "+(a.profiles?.last_name||"")).trim()||"this teacher";
+ const detail=`${teacherName} from ${a.class||"the assigned class"} · ${a.subjects?.name||"this subject"}`;
+ if(!confirm(`Remove ${detail}? The teacher will lose access through this assignment. Existing lessons, exam attempts, results and uploaded files will not be deleted.`))return;
+ const {error}=await sb.from("teacher_subject_assignments").delete().eq("id",assignmentId);
+ if(error)return toast(error.message,true);
+ toast("Teacher removed from the selected subject.");
+ await manageTeacherAssignments();
+}
+
 async function manageAccounts(){
  if(profile.role!=="admin")return toast("Administrator access required.",true);
  const email=prompt("Enter the exact email address of the student or teacher account:");
