@@ -632,7 +632,7 @@ async function adminPeoplePage(role){
  const roleLabel=role==="student"?"Students":role==="teacher"?"Teachers":"Administrators";
  const {data:people,error}=await sb.from("profiles").select("*").eq("role",role).order("created_at",{ascending:false}).limit(500);
  if(error)throw error;
- const actionButtons=(p)=>`${role==="student"?`<button class="btn btn-soft" onclick="adminChangeClass('${p.id}')">Change class</button>`:""}${role!=="admin"?`<button class="btn btn-soft" onclick="adminToggleActive('${p.id}',${p.is_active!==false})">${p.is_active===false?"Restore access":"Disable access"}</button>`:""}`;
+ const actionButtons=(p)=>`${role==="student"?`<button class="btn btn-soft" onclick="adminChangeClass('${p.id}')">Change class</button><button class="btn btn-primary" onclick="adminConvertStudentToTeacher('${p.id}')">Change role to Teacher</button>`:""}${role!=="admin"?`<button class="btn btn-soft" onclick="adminToggleActive('${p.id}',${p.is_active!==false})">${p.is_active===false?"Restore access":"Disable access"}</button>`:""}`;
  const addAdminForm=role==="admin"?`<div class="card" style="margin-top:18px"><h2>Add another administrator</h2><p>First, the person must create an account and sign in to the LMS at least once. Enter the email address used for that account to grant administrator access.</p><div style="display:flex;gap:8px;flex-wrap:wrap"><input id="newAdminEmail" type="email" placeholder="person@example.com" style="padding:11px;border:1px solid #ddd;border-radius:8px;min-width:260px;flex:1"><button class="btn btn-primary" onclick="grantAdminByEmail()">Grant admin access</button></div><p class="muted">Only grant this role to a trusted person. Administrators can manage school-wide data and accounts.</p></div>`:"";
  $("content").innerHTML=`<div class="page-head"><div><h1>${roleLabel}</h1><p>Manage ${roleLabel.toLowerCase()} separately from other account types.</p></div><button class="btn btn-soft" onclick="navigate('admin')">← Admin Control</button></div>
  <div class="card stat"><strong>${people?.length||0}</strong><span>${roleLabel} accounts</span></div>${addAdminForm}
@@ -654,6 +654,21 @@ async function grantAdminByEmail(){
  toast(`Administrator access granted to ${user.email||email}.`);
  await adminPeoplePage("admin");
 }
+async function adminConvertStudentToTeacher(id){
+ if(profile?.role!=="admin")return toast("Only administrators can change account roles.",true);
+ const {data:user,error:lookupError}=await sb.from("profiles").select("id,first_name,last_name,email,role,class").eq("id",id).maybeSingle();
+ if(lookupError)return toast("Unable to load account: "+lookupError.message,true);
+ if(!user)return toast("Account not found.",true);
+ if(user.role!=="student")return toast("This action is only for accounts currently registered as students.",true);
+ const fullName=[user.first_name,user.last_name].filter(Boolean).join(" ")||user.email||"this user";
+ if(!confirm(`Change ${fullName} from Student to Teacher?\n\nThe person will keep the same login account and password. Existing exam attempts and historical records will be retained. You will need to assign their subjects and classes separately.`))return;
+ const {data:updated,error:updateError}=await sb.from("profiles").update({role:"teacher"}).eq("id",user.id).eq("role","student").select("id,role").maybeSingle();
+ if(updateError)return toast("Unable to change role: "+updateError.message,true);
+ if(!updated)return toast("The role was not changed. The account may have changed already, or administrator permissions may be missing.",true);
+ toast(`${fullName} is now registered as a teacher. Assign their subjects and classes next.`);
+ await adminPeoplePage("teacher");
+}
+
 async function adminChangeClass(id){
  if(profile?.role!=="admin")return toast("Only administrators can change a student's class.",true);
  const choices=["JSS 1","JSS 2","JSS 3","SS 1","SS 2","SS 3"];
